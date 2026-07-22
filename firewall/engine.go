@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 	"raf/config"
+	"raf/intelligence"
 	"raf/utils"
 )
 
@@ -53,37 +54,38 @@ func buildAndApplyRestore(isIPv6 bool) {
 		denySet = "RAF_6_DENY"
 	}
 
-	// === BEGIN IPTABLES FORMAT ===
 	buffer.WriteString("*filter\n")
-	
-	// Create Custom Chains
 	buffer.WriteString(":RAF_INPUT - [0:0]\n")
 	buffer.WriteString(":RAF_OUTPUT - [0:0]\n")
 	buffer.WriteString(":RAF_ALLOW - [0:0]\n")
 	buffer.WriteString(":RAF_DENY - [0:0]\n")
 	buffer.WriteString(":RAF_ADVANCED - [0:0]\n")
 
-	// Hook to Main OS Chains (At Top)
 	buffer.WriteString("-I INPUT 1 -j RAF_INPUT\n")
 	buffer.WriteString("-I OUTPUT 1 -j RAF_OUTPUT\n")
 
-	// === 1. CPU SAVER: STATEFUL CONNECTION ===
+	// 1. CPU SAVER: STATEFUL CONNECTION
 	buffer.WriteString("-A RAF_INPUT -m state --state INVALID -j DROP\n")
 	buffer.WriteString("-A RAF_INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT\n")
 	buffer.WriteString("-A RAF_OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT\n")
 	buffer.WriteString("-A RAF_INPUT -i lo -j ACCEPT\n")
 	buffer.WriteString("-A RAF_OUTPUT -o lo -j ACCEPT\n")
 
-	// === 2. ROUTING PIPELINE ===
+	// 2. ROUTING PIPELINE
 	buffer.WriteString("-A RAF_INPUT -j RAF_ALLOW\n")
 	buffer.WriteString("-A RAF_INPUT -j RAF_DENY\n")
 	buffer.WriteString("-A RAF_INPUT -j RAF_ADVANCED\n")
 
-	// === 3. ALLOW / DENY LOGIC (Menggunakan IPSET) ===
+	// 3. ALLOW / DENY LOGIC
 	buffer.WriteString("-A RAF_ALLOW -m set --match-set " + allowSet + " src -j ACCEPT\n")
 	buffer.WriteString("-A RAF_DENY -m set --match-set " + denySet + " src -j DROP\n")
 
-	// === 4. PORT OPENING LOGIC ===
+	// 4. MINTA INTELLIGENCE MODULE UNTUK MENGKAITKAN IPSET KE IPTABLES (NEW!)
+	if !isIPv6 {
+		intelligence.GenerateIptablesHooks(&buffer)
+	}
+
+	// 5. PORT OPENING LOGIC
 	tcpIn := strings.Split(config.CoreData.Config["RAF_TCP_IN"], ",")
 	tcpOut := strings.Split(config.CoreData.Config["RAF_TCP_OUT"], ",")
 	udpIn := strings.Split(config.CoreData.Config["RAF_UDP_IN"], ",")
@@ -94,7 +96,6 @@ func buildAndApplyRestore(isIPv6 bool) {
 	generatePortRules(&buffer, "RAF_OUTPUT", "tcp", tcpOut)
 	generatePortRules(&buffer, "RAF_OUTPUT", "udp", udpOut)
 
-	// ICMP (Ping)
 	if config.CoreData.Config["RAF_ICMP_IN"] == "1" {
 		if isIPv6 {
 			buffer.WriteString("-A RAF_INPUT -p icmpv6 --icmpv6-type echo-request -j ACCEPT\n")
@@ -103,24 +104,22 @@ func buildAndApplyRestore(isIPv6 bool) {
 		}
 	}
 
-	// === 5. LAYER 4 ADVANCED MITIGATIONS (NEW!) ===
-	// Eksekusi fungsi modul mitigasi yang baru kita buat
+	// LAYER 4 ADVANCED MITIGATIONS
 	AppendAdvancedMitigations(&buffer, isIPv6)
 
 	buffer.WriteString("COMMIT\n")
-	// === END IPTABLES FORMAT ===
 
-	// Eksekusi Atomic Restore
-	cmd := exec.Command(bin, "-n") // -n = noflush (aman)
+	cmd := exec.Command(bin, "-n")
 	cmd.Stdin = bytes.NewReader(buffer.Bytes())
 	
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		utils.LogError("%s Apply Failed: %s\nError Details: %s", bin, err, string(out))
 	} else {
-		utils.LogInfo("%s Apply successfully.", bin)
+		utils.LogInfo("%s Kernel Rules Apply successfully.", bin)
 	}
 }
+	
 
 	
 
