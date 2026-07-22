@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os/exec"
 	"raf/config"
+	"raf/intelligence"
 	"raf/utils"
 )
 
@@ -45,6 +46,8 @@ func RebuildIPSets() error {
 			buffer.WriteString("add RAF_6_DENY " + ip + " -exist\n")
 		}
 	}
+
+	intelligence.GenerateIpsetCommands(&buffer)
 
 	// Execute Ipset Restore in one atomic block
 	cmd := exec.Command("ipset", "restore")
