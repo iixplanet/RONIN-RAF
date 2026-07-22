@@ -4,8 +4,8 @@ package firewall
 import (
 	"bytes"
 	"os/exec"
-	"raf/utils"
 	"raf/config"
+	"raf/utils"
 )
 
 // RebuildIPSets membersihkan dan membuat ulang tabel ipset di dalam kernel
@@ -58,4 +58,32 @@ func RebuildIPSets() error {
 
 	utils.LogInfo("IPSets synchronized successfully (Memory Optimized).")
 	return nil
+}
+
+// DynamicBan menambahkan IP ke ipset secara instan (Untuk LFD)
+func DynamicBan(ip string) {
+	isIPv6 := utils.CheckIPType(ip) == "6"
+	setName := "RAF_DENY"
+	if isIPv6 {
+		setName = "RAF_6_DENY"
+	}
+
+	cmd := exec.Command("ipset", "add", setName, ip, "-exist")
+	if err := cmd.Run(); err == nil {
+		utils.LogInfo("LFD INSTANT BLOCK: %s injected to Kernel IPSet.", ip)
+	}
+}
+
+// DynamicUnban menghapus IP dari ipset (Untuk Temp Ban Expiration)
+func DynamicUnban(ip string) {
+	isIPv6 := utils.CheckIPType(ip) == "6"
+	setName := "RAF_DENY"
+	if isIPv6 {
+		setName = "RAF_6_DENY"
+	}
+
+	cmd := exec.Command("ipset", "del", setName, ip)
+	if err := cmd.Run(); err == nil {
+		utils.LogInfo("LFD AUTO-UNBAN: %s removed from Kernel IPSet.", ip)
+	}
 }
