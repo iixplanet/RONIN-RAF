@@ -9,6 +9,12 @@ import (
 	"raf/utils" // Ubah "raf" sesuaikan dengan nama module go.mod Anda
 )
 
+// file: config/parser.go (Tambahkan di bawah blok import)
+const (
+	AllowFile = "/usr/local/ronin/lib/raf/raf.allow"
+	DenyFile  = "/usr/local/ronin/lib/raf/raf.deny"
+)
+
 type RAFData struct {
 	Config     map[string]string
 	AllowList4 []string
