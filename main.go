@@ -4,10 +4,12 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"raf/config"
 	"raf/firewall"
+	"raf/lfd"
 	"raf/utils"
 )
 
@@ -45,7 +47,7 @@ func main() {
 
 	// 3. Build & Apply Firewall Rules
 	BootSequence()
-
+    lfd.StartLFDEngine()
 	// 4. Setup Signal Trapper for Hot-Reload & Graceful Shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
