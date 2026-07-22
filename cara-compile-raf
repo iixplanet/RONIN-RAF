@@ -1,0 +1,21 @@
+Cara Inisialisasi & Build Fase 1
+Masuk ke terminal Linux Anda, buat folder project:
+code
+Bash
+
+mkdir -p /usr/local/ronin/lib/raf_dev
+cd /usr/local/ronin/lib/raf_dev
+  
+Buat inisialisasi module Go (Wajib agar import antar package terbaca):
+code
+Bash
+
+go mod init raf
+
+Buat file-file di atas sesuai letak foldernya.
+Pastikan ipset terinstal di OS Anda (apt install ipset / yum install ipset).
+Build dan jalankan!:
+code
+Bash
+go build -o ronin-raf-daemon main.go
+./ronin-raf-daemon
