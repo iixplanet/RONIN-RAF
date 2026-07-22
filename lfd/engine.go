@@ -190,3 +190,18 @@ func CleanupStrikes() {
 		EngineMutex.Unlock()
 	}
 }
+
+// file: lfd/engine.go (Tambahkan di bawah)
+
+// ExecuteUnban menghapus IP 
+func ExecuteUnban(ip string) {
+	EngineMutex.Lock()
+	if _, exists := TempBans[ip]; exists {
+		delete(TempBans, ip)
+	}
+	EngineMutex.Unlock()
+	
+	SaveTempBans()
+	firewall.DynamicUnban(ip)
+	utils.LogInfo("LFD MANUAL UNBAN: %s removed by Admin Command.", ip)
+}
