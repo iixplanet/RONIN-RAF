@@ -38,6 +38,9 @@ func ApplyIptables() {
 	}
 }
 
+
+// file: firewall/engine.go (Bagian yang diubah)
+
 func buildAndApplyRestore(isIPv6 bool) {
 	var buffer bytes.Buffer
 	bin := "iptables-restore"
@@ -65,12 +68,9 @@ func buildAndApplyRestore(isIPv6 bool) {
 	buffer.WriteString("-I OUTPUT 1 -j RAF_OUTPUT\n")
 
 	// === 1. CPU SAVER: STATEFUL CONNECTION ===
-	// Tolak paket invalid
 	buffer.WriteString("-A RAF_INPUT -m state --state INVALID -j DROP\n")
-	// Izinkan koneksi yang sudah terbuka
 	buffer.WriteString("-A RAF_INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT\n")
 	buffer.WriteString("-A RAF_OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT\n")
-	// Izinkan Loopback
 	buffer.WriteString("-A RAF_INPUT -i lo -j ACCEPT\n")
 	buffer.WriteString("-A RAF_OUTPUT -o lo -j ACCEPT\n")
 
@@ -103,20 +103,26 @@ func buildAndApplyRestore(isIPv6 bool) {
 		}
 	}
 
+	// === 5. LAYER 4 ADVANCED MITIGATIONS (NEW!) ===
+	// Eksekusi fungsi modul mitigasi yang baru kita buat
+	AppendAdvancedMitigations(&buffer, isIPv6)
+
 	buffer.WriteString("COMMIT\n")
 	// === END IPTABLES FORMAT ===
 
 	// Eksekusi Atomic Restore
-	cmd := exec.Command(bin, "-n") // -n = noflush (aman, tidak menghapus rule Docker/Plesk)
+	cmd := exec.Command(bin, "-n") // -n = noflush (aman)
 	cmd.Stdin = bytes.NewReader(buffer.Bytes())
 	
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		utils.LogError("%s Apply Failed: %s\nError Details: %s", bin, err, string(out))
 	} else {
-		utils.LogInfo("%s Kernel Rules injected successfully.", bin)
+		utils.LogInfo("%s Apply successfully.", bin)
 	}
 }
+
+	
 
 func generatePortRules(buffer *bytes.Buffer, chain, proto string, ports []string) {
 	for _, port := range ports {
