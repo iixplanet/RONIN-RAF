@@ -42,6 +42,8 @@ func InitAndParse() {
 		defaultBL := "# Format: NAME|INTERVAL(seconds)|MAX|URL\n" +
 			"SPAMDROP|86400|0|https://www.spamhaus.org/drop/drop.txt\n" +
 			"DSHIELD|86400|0|https://www.dshield.org/block.txt\n"
+		
+		os.MkdirAll(filepath.Dir(BlocklistFile), 0755)
 		os.WriteFile(BlocklistFile, []byte(defaultBL), 0644)
 	}
 
@@ -107,22 +109,25 @@ func GenerateIpsetCommands(buffer *bytes.Buffer) {
 
 // GenerateIptablesHooks dipanggil oleh firewall/engine.go untuk menghubungkan IPSet ke rule kernel
 func GenerateIptablesHooks(buffer *bytes.Buffer) {
+	// Blocklists didahulukan
 	for _, bl := range ActiveBlocklists {
 		buffer.WriteString(fmt.Sprintf("-A RAF_INPUT -m set --match-set bl_%s src -j DROP\n", bl.Name))
 	}
+	// Kemudian CC Deny
 	for _, cc := range ActiveCCDeny {
 		buffer.WriteString(fmt.Sprintf("-A RAF_DENY -m set --match-set cc_%s src -j DROP\n", cc))
 	}
+	// Kemudian CC Allow
 	for _, cc := range ActiveCCAllow {
 		buffer.WriteString(fmt.Sprintf("-A RAF_ALLOW -m set --match-set cc_%s src -j ACCEPT\n", cc))
 	}
 }
 
-// StartBackgroundWorkers memulai download Blocklist & meload GeoIP Zone secara asynchronous (Tidak bikin server hang)
+// StartBackgroundWorkers memulai download Blocklist & meload GeoIP Zone secara asynchronous
 func StartBackgroundWorkers() {
-	// Load GeoIP (Country Zones) langsung
-	go loadZonesToIpset(ActiveCCDeny)
-	go loadZonesToIpset(ActiveCCAllow)
+	// Load GeoIP (Country Zones) langsung di background
+	if len(ActiveCCDeny) > 0 { go loadZonesToIpset(ActiveCCDeny) }
+	if len(ActiveCCAllow) > 0 { go loadZonesToIpset(ActiveCCAllow) }
 
 	// Mulai penjadwalan download Global Blocklists
 	for _, bl := range ActiveBlocklists {
@@ -151,6 +156,7 @@ func loadZonesToIpset(ccList []string) {
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
 			ip := strings.TrimSpace(scanner.Text())
+			// Validasi baris harus berupa IPv4 atau CIDR
 			if ipv4Regex.MatchString(ip) {
 				buffer.WriteString(fmt.Sprintf("add cc_%s %s -exist\n", cc, ip))
 				count++
@@ -160,10 +166,13 @@ func loadZonesToIpset(ccList []string) {
 	}
 
 	if count > 0 {
-		cmd := exec.Command("ipset", "restore")
+		// Menggunakan flag "-!" (Force) agar kebal terhadap error duplicate entry atau metadata conflict
+		cmd := exec.Command("ipset", "-!", "restore")
 		cmd.Stdin = bytes.NewReader(buffer.Bytes())
 		if err := cmd.Run(); err == nil {
-			utils.LogInfo("GeoIP Intel: Successfully injected %d Country IP Blocks.", count)
+			utils.LogInfo("GeoIP Intel: Successfully apply %d Country IP Blocks.", count)
+		} else {
+			utils.LogError("GeoIP Intel: Failed to apply to IPSet.")
 		}
 	}
 }
@@ -172,7 +181,11 @@ func loadZonesToIpset(ccList []string) {
 func downloadAndInjectBlocklist(bl Blocklist) {
 	utils.LogInfo("Global Intel: Downloading Threat Feed [%s]...", bl.Name)
 
-	resp, err := http.Get(bl.URL)
+	client := &http.Client{
+		Timeout: 30 * time.Second, // Timeout agar tidak hang jika server threat intel down
+	}
+
+	resp, err := client.Get(bl.URL)
 	if err != nil {
 		utils.LogWarn("Global Intel: Failed to fetch [%s] -> %v", bl.Name, err)
 		return
@@ -190,12 +203,15 @@ func downloadAndInjectBlocklist(bl Blocklist) {
 			buffer.WriteString(fmt.Sprintf("add bl_%s %s -exist\n", bl.Name, ip))
 		}
 
-		cmd := exec.Command("ipset", "restore")
+		// Menggunakan flag "-!" (Force) agar tidak error saat menimpa/menambah
+		cmd := exec.Command("ipset", "-!", "restore")
 		cmd.Stdin = bytes.NewReader(buffer.Bytes())
 		if err := cmd.Run(); err == nil {
 			utils.LogInfo("Global Intel: Feed [%s] updated! Loaded %d Malicious IPs into Kernel.", bl.Name, len(ips))
 		} else {
-			utils.LogError("Global Intel: Failed to inject [%s] to IPSet.", bl.Name)
+			utils.LogError("Global Intel: Failed to apply [%s] to IPSet.", bl.Name)
 		}
+	} else {
+		utils.LogWarn("Global Intel: Feed [%s] returned 0 valid IPs.", bl.Name)
 	}
 }
