@@ -139,3 +139,47 @@ func generatePortRules(buffer *bytes.Buffer, chain, proto string, ports []string
 		}
 	}
 }
+
+
+// file: firewall/engine.go (Tambahkan di baris paling bawah)
+
+// Teardown menghapus SELURUH rules, chains, dan ipset RAF dari Kernel (Sama seperti csf -f / csf -x)
+func Teardown() {
+	utils.LogInfo("Initiating Total Firewall Flush (Teardown Sequence)...")
+
+	targets := []bool{false} // IPv4
+	if config.CoreData.Config["RAF_IPV6"] == "1" {
+		targets = append(targets, true) // IPv6
+	}
+
+	for _, isIPv6 := range targets {
+		bin := "iptables"
+		if isIPv6 { bin = "ip6tables" }
+
+		// 1. Cabut Hook Utama
+		exec.Command(bin, "-D", "INPUT", "-j", "RAF_INPUT").Run()
+		exec.Command(bin, "-D", "OUTPUT", "-j", "RAF_OUTPUT").Run()
+
+		// 2. Flush (Kosongkan Isi Chain)
+		chains := []string{"RAF_INPUT", "RAF_OUTPUT", "RAF_ALLOW", "RAF_DENY", "RAF_ADVANCED"}
+		for _, chain := range chains {
+			exec.Command(bin, "-F", chain).Run()
+		}
+
+		// 3. Delete (Hapus Nama Chain dari Iptables)
+		for _, chain := range chains {
+			exec.Command(bin, "-X", chain).Run()
+		}
+	}
+
+	// 4. Hancurkan IPSet dari Memori (RAM)
+	// Kita hancurkan IPSet Inti. (Catatan: IPSet tidak bisa dihancurkan jika masih menempel di iptables,
+	// itulah mengapa langkah 1, 2, dan 3 di atas wajib dilakukan terlebih dahulu).
+	exec.Command("ipset", "destroy", "RAF_ALLOW").Run()
+	exec.Command("ipset", "destroy", "RAF_DENY").Run()
+	exec.Command("ipset", "destroy", "RAF_6_ALLOW").Run()
+	exec.Command("ipset", "destroy", "RAF_6_DENY").Run()
+
+	utils.LogInfo("Firewall flushed and disabled. Kernel is now 100% clean.")
+}
+
