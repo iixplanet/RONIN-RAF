@@ -1,4 +1,3 @@
-// file: main.go
 package main
 
 import (
@@ -9,6 +8,7 @@ import (
 	"syscall"
 	"raf/config"
 	"raf/firewall"
+	"raf/intelligence" // <== IMPORT MODULE INTELLIGENCE
 	"raf/lfd"
 	"raf/utils"
 )
@@ -23,7 +23,15 @@ const (
 func BootSequence() {
 	utils.LogInfo("Synchronizing Configuration Data...")
 	config.LoadAll(ConfigPath, AllowFile, DenyFile)
+
+	// INISIALISASI STRUKTUR INTELLIGENCE SEBELUM FIREWALL DI-APPLY
+	intelligence.InitAndParse()
+
 	firewall.ApplyIptables()
+
+	// MULAI BACKGROUND DOWNLOADER (SPAMHAUS, DSHIELD, ZONE FILES)
+	intelligence.StartBackgroundWorkers()
+
 	utils.LogInfo("Network Defense Layer Active.")
 }
 
