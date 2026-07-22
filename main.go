@@ -65,19 +65,22 @@ func main() {
 
 	utils.LogInfo("RAF Core is now running and waiting for events/signals.")
 
+	// file: main.go (Perbarui blok shutdown di dalam func main)
+
 	for {
 		sig := <-sigChan
 		if sig == syscall.SIGHUP {
 			utils.LogInfo("SIGHUP received: Executing Zero-Downtime Hot-Reload...")
 			BootSequence() 
 		} else {
+			// ========================================================
+			// BLOK SHUTDOWN YANG DIPERBARUI (TOTAL FLUSH)
+			// ========================================================
 			utils.LogInfo("Shutdown Signal received. Terminating safely...")
-			exec.Command("iptables", "-D", "INPUT", "-j", "RAF_INPUT").Run()
-			exec.Command("iptables", "-D", "OUTPUT", "-j", "RAF_OUTPUT").Run()
-			if config.CoreData.Config["RAF_IPV6"] == "1" {
-				exec.Command("ip6tables", "-D", "INPUT", "-j", "RAF_INPUT").Run()
-				exec.Command("ip6tables", "-D", "OUTPUT", "-j", "RAF_OUTPUT").Run()
-			}
+			
+			// Panggil fungsi flush & destroy total seperti `csf -x`
+			firewall.Teardown()
+			
 			break
 		}
 	}
