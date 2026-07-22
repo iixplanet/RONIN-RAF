@@ -1,4 +1,4 @@
-// file: firewall/ipset.go
+// file: firewall/ipset.go (Perbarui argumen exec.Command)
 package firewall
 
 import (
@@ -30,7 +30,7 @@ func RebuildIPSets() error {
 		buffer.WriteString("flush RAF_6_DENY\n")
 	}
 
-	// 3. Populate Allow Lists (IPv4 & IPv6)
+	// 3. Populate Allow/Deny Lists
 	for _, ip := range config.CoreData.AllowList4 {
 		buffer.WriteString("add RAF_ALLOW " + ip + " -exist\n")
 	}
@@ -47,10 +47,12 @@ func RebuildIPSets() error {
 		}
 	}
 
+	// 4. MINTA INTELIGENCE MODULE UNTUK MENYIAPKAN TABEL IPSET MEREKA
 	intelligence.GenerateIpsetCommands(&buffer)
 
 	// Execute Ipset Restore in one atomic block
-	cmd := exec.Command("ipset", "restore")
+	// PERUBAHAN: Tambahkan "-!" untuk mengabaikan error force exist
+	cmd := exec.Command("ipset", "-!", "restore")
 	cmd.Stdin = bytes.NewReader(buffer.Bytes())
 	
 	out, err := cmd.CombinedOutput()
@@ -71,9 +73,10 @@ func DynamicBan(ip string) {
 		setName = "RAF_6_DENY"
 	}
 
-	cmd := exec.Command("ipset", "add", setName, ip, "-exist")
+	// PERUBAHAN: Tambahkan "-!"
+	cmd := exec.Command("ipset", "-!", "add", setName, ip)
 	if err := cmd.Run(); err == nil {
-		utils.LogInfo("LFD INSTANT BLOCK: %s injected to Kernel IPSet.", ip)
+		utils.LogInfo("RAF LFD INSTANT BLOCK: %s apply to Kernel IPSet.", ip)
 	}
 }
 
@@ -85,8 +88,9 @@ func DynamicUnban(ip string) {
 		setName = "RAF_6_DENY"
 	}
 
-	cmd := exec.Command("ipset", "del", setName, ip)
+	// PERUBAHAN: Tambahkan "-!"
+	cmd := exec.Command("ipset", "-!", "del", setName, ip)
 	if err := cmd.Run(); err == nil {
-		utils.LogInfo("LFD AUTO-UNBAN: %s removed from Kernel IPSet.", ip)
+		utils.LogInfo("RAF LFD AUTO-UNBAN: %s removed from Kernel IPSet.", ip)
 	}
 }
