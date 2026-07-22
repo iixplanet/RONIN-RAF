@@ -11,13 +11,13 @@ import (
 	"github.com/nxadm/tail"
 )
 
-// Regex Definitions (Standard CSF Parity)
+// Regex Definitions (Standard CSF Parity - Disempurnakan)
 var (
-	RegexSSHD        = regexp.MustCompile(`(?i)(?:Failed password for|Invalid user|Failed keyboard-interactive).*?from ([\d\.]+|[a-fA-F0-9:]+)`)
-	RegexFTPD        = regexp.MustCompile(`(?i)pure-ftpd:.*?\(.*?@([\d\.]+|[a-fA-F0-9:]+)\) \[WARNING\] Authentication failed`)
-	RegexExim        = regexp.MustCompile(`(?i)(?:authenticator failed|fixed_login).*? \[([\d\.]+|[a-fA-F0-9:]+)\](?::\d+)?.*?(: 535 Incorrect authentication data)`)
-	RegexCpanel      = regexp.MustCompile(`(?i)FAILED LOGIN.*?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})`)
-	RegexDirectAdmin = regexp.MustCompile(`(?i)Failed login attempt.*?ip=([\d\.]+|[a-fA-F0-9:]+)`)
+	RegexSSHD        = regexp.MustCompile(`(?i)(?:Failed password for|Invalid user|Failed keyboard-interactive).*?(?:from|)\s*([\d\.]+|[a-fA-F0-9:]+)`)
+	RegexFTPD        = regexp.MustCompile(`(?i)(?:pure-ftpd:.*?\(.*?@([\d\.]+|[a-fA-F0-9:]+)\) \[WARNING\] Authentication failed|proftpd\[.*?\].*?([\d\.]+|[a-fA-F0-9:]+) .*?: Incorrect password)`)
+	RegexExim        = regexp.MustCompile(`(?i)(?:authenticator failed|fixed_login).*?\[([\d\.]+|[a-fA-F0-9:]+)\]`)
+	RegexCpanel      = regexp.MustCompile(`(?i)(?:\[.*?\]\s+\w+\s+\[.*?\]\s+([\d\.]+|[a-fA-F0-9:]+).*?FAILED LOGIN|FAILED LOGIN.*?([\d\.]+|[a-fA-F0-9:]+))`)
+	RegexDirectAdmin = regexp.MustCompile(`(?i)'([\d\.]+|[a-fA-F0-9:]+)'\s+failed login attempt`)
 	RegexModSec      = regexp.MustCompile(`(?i)ModSecurity: Access denied.*?\[client ([\d\.]+|[a-fA-F0-9:]+)\]`)
 )
 
@@ -38,9 +38,21 @@ func parseLogLine(line, service string, maxLimit int) {
 		match = RegexModSec.FindStringSubmatch(line)
 	}
 
+	// Tangkap IP dari Capture Group manapun yang terisi
 	if len(match) > 1 {
-		ip := strings.TrimSpace(match[1])
-		AddStrike(ip, service, maxLimit)
+		var ip string
+		for i := 1; i < len(match); i++ {
+			if match[i] != "" {
+				ip = match[i]
+				break
+			}
+		}
+
+		if ip != "" {
+			ip = strings.TrimSpace(ip)
+			utils.LogInfo("LFD STRIKE DETECTED: IP %s failed %s login.", ip, service) // Tambahan indikator visual
+			AddStrike(ip, service, maxLimit)
+		}
 	}
 }
 
@@ -49,7 +61,7 @@ func tailFile(filePath, service string, maxLimit int) {
 		Follow:    true,
 		ReOpen:    true,  // Menangani log rotation otomatis
 		MustExist: false, // Jika file belum ada, tunggu sampai ada
-		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END}, // Baca dari ujung
+		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END}, // Baca dari ujung saat daemon menyala
 	})
 
 	if err != nil {
@@ -59,6 +71,7 @@ func tailFile(filePath, service string, maxLimit int) {
 
 	utils.LogInfo("LFD WATCHER: Hooked into %s [Target: %s | Limit: %d]", filePath, service, maxLimit)
 
+	// Loop Event-Driven: Hanya berjalan jika ada baris log baru (O(1) CPU usage)
 	for line := range t.Lines {
 		go parseLogLine(line.Text, service, maxLimit)
 	}
@@ -112,7 +125,7 @@ func StartLFDEngine() {
 			if _, err := os.Stat("/var/log/exim_mainlog"); err == nil {
 				logPath = "/var/log/exim_mainlog"
 			} else {
-				logPath = "/var/log/exim4/mainlog"
+				logPath = "/var/log/exim/mainlog"
 			}
 		case "CPANEL":
 			logPath = "/usr/local/cpanel/logs/login_log"
