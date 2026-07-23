@@ -3,6 +3,7 @@ package firewall
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
 	"strings"
 	"raf/config"
@@ -10,17 +11,58 @@ import (
 	"raf/utils"
 )
 
-// ApplyIptables membangun dan meng-inject rules ke kernel Linux
+// getSSHPort membaca port asli dari sistem
+func getSSHPort() string {
+	data, err := os.ReadFile("/etc/ssh/sshd_config")
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "Port ") {
+				return strings.TrimSpace(strings.TrimPrefix(line, "Port "))
+			}
+		}
+	}
+	return "22"
+}
+
+// getRoninPort membaca port web dashboard
+func getRoninPort() string {
+	data, err := os.ReadFile("/usr/local/ronin/config.ronin")
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "listen_port") {
+				parts := strings.Split(line, "=")
+				if len(parts) == 2 { return strings.Trim(strings.TrimSpace(parts[1]), `"'`) }
+			}
+		}
+	}
+	return "5029" // fallback default
+}
+
+func appendUnique(slice []string, items ...string) []string {
+	m := make(map[string]bool)
+	for _, v := range slice { m[strings.TrimSpace(v)] = true }
+	var res []string
+	for _, v := range slice { res = append(res, strings.TrimSpace(v)) }
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if !m[item] && item != "" {
+			res = append(res, item)
+			m[item] = true
+		}
+	}
+	return res
+}
+
 func ApplyIptables() {
-	// Rebuild IPSet terlebih dahulu
 	if err := RebuildIPSets(); err != nil {
-		utils.LogWarn("Warning: IPSet build encountered issues. Firewall might operate in degraded mode.")
+		utils.LogWarn("IPSet build encountered issues. Firewall might operate in degraded mode.")
 	}
 
 	config.CoreData.Mutex.RLock()
 	defer config.CoreData.Mutex.RUnlock()
 
-	// Teardown hook lama (jika ada) agar tidak duplikat
 	exec.Command("iptables", "-D", "INPUT", "-j", "RAF_INPUT").Run()
 	exec.Command("iptables", "-D", "OUTPUT", "-j", "RAF_OUTPUT").Run()
 	if config.CoreData.Config["RAF_IPV6"] == "1" {
@@ -29,18 +71,11 @@ func ApplyIptables() {
 	}
 
 	utils.LogInfo("Building Stateful Packet Inspection (SPI) Rules...")
-
-	// 1. Eksekusi untuk IPv4
 	buildAndApplyRestore(false)
-
-	// 2. Eksekusi untuk IPv6 (Jika diaktifkan)
 	if config.CoreData.Config["RAF_IPV6"] == "1" {
 		buildAndApplyRestore(true)
 	}
 }
-
-
-// file: firewall/engine.go (Bagian yang diubah)
 
 func buildAndApplyRestore(isIPv6 bool) {
 	var buffer bytes.Buffer
@@ -64,32 +99,28 @@ func buildAndApplyRestore(isIPv6 bool) {
 	buffer.WriteString("-I INPUT 1 -j RAF_INPUT\n")
 	buffer.WriteString("-I OUTPUT 1 -j RAF_OUTPUT\n")
 
-	// 1. CPU SAVER: STATEFUL CONNECTION
 	buffer.WriteString("-A RAF_INPUT -m state --state INVALID -j DROP\n")
 	buffer.WriteString("-A RAF_INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT\n")
 	buffer.WriteString("-A RAF_OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT\n")
 	buffer.WriteString("-A RAF_INPUT -i lo -j ACCEPT\n")
 	buffer.WriteString("-A RAF_OUTPUT -o lo -j ACCEPT\n")
 
-	// 2. ROUTING PIPELINE
 	buffer.WriteString("-A RAF_INPUT -j RAF_ALLOW\n")
 	buffer.WriteString("-A RAF_INPUT -j RAF_DENY\n")
 	buffer.WriteString("-A RAF_INPUT -j RAF_ADVANCED\n")
 
-	// 3. ALLOW / DENY LOGIC
 	buffer.WriteString("-A RAF_ALLOW -m set --match-set " + allowSet + " src -j ACCEPT\n")
 	buffer.WriteString("-A RAF_DENY -m set --match-set " + denySet + " src -j DROP\n")
 
-	// 4. MINTA INTELLIGENCE MODULE UNTUK MENGKAITKAN IPSET KE IPTABLES (NEW!)
-	if !isIPv6 {
-		intelligence.GenerateIptablesHooks(&buffer)
-	}
+	if !isIPv6 { intelligence.GenerateIptablesHooks(&buffer) }
 
-	// 5. PORT OPENING LOGIC
+	// PORT INJECTION DENGAN ANTI-LOCKOUT
 	tcpIn := strings.Split(config.CoreData.Config["RAF_TCP_IN"], ",")
 	tcpOut := strings.Split(config.CoreData.Config["RAF_TCP_OUT"], ",")
 	udpIn := strings.Split(config.CoreData.Config["RAF_UDP_IN"], ",")
 	udpOut := strings.Split(config.CoreData.Config["RAF_UDP_OUT"], ",")
+
+	tcpIn = appendUnique(tcpIn, getSSHPort(), getRoninPort()) // INJECT OTOMATIS
 
 	generatePortRules(&buffer, "RAF_INPUT", "tcp", tcpIn)
 	generatePortRules(&buffer, "RAF_INPUT", "udp", udpIn)
@@ -97,42 +128,26 @@ func buildAndApplyRestore(isIPv6 bool) {
 	generatePortRules(&buffer, "RAF_OUTPUT", "udp", udpOut)
 
 	if config.CoreData.Config["RAF_ICMP_IN"] == "1" {
-		if isIPv6 {
-			buffer.WriteString("-A RAF_INPUT -p icmpv6 --icmpv6-type echo-request -j ACCEPT\n")
-		} else {
-			buffer.WriteString("-A RAF_INPUT -p icmp --icmp-type echo-request -j ACCEPT\n")
-		}
+		if isIPv6 { buffer.WriteString("-A RAF_INPUT -p icmpv6 --icmpv6-type echo-request -j ACCEPT\n")
+		} else { buffer.WriteString("-A RAF_INPUT -p icmp --icmp-type echo-request -j ACCEPT\n") }
 	}
 
-	// LAYER 4 ADVANCED MITIGATIONS
 	AppendAdvancedMitigations(&buffer, isIPv6)
-
 	buffer.WriteString("COMMIT\n")
 
 	cmd := exec.Command(bin, "-n")
 	cmd.Stdin = bytes.NewReader(buffer.Bytes())
-	
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		utils.LogError("%s Apply Failed: %s\nError Details: %s", bin, err, string(out))
-	} else {
+	if err := cmd.Run(); err == nil {
 		utils.LogInfo("%s Kernel Rules Apply successfully.", bin)
 	}
 }
-	
-
-	
 
 func generatePortRules(buffer *bytes.Buffer, chain, proto string, ports []string) {
 	for _, port := range ports {
 		port = strings.TrimSpace(port)
-		if port == "" {
-			continue
-		}
-		// Support port range (ex: 6000:7000)
+		if port == "" { continue }
 		flag := "--dport"
 		if strings.Contains(port, ":") {
-			// iptables range butuh modul tambahan "-m tcp" atau "udp"
 			buffer.WriteString("-A " + chain + " -p " + proto + " -m " + proto + " " + flag + " " + port + " -j ACCEPT\n")
 		} else {
 			buffer.WriteString("-A " + chain + " -p " + proto + " " + flag + " " + port + " -j ACCEPT\n")
@@ -140,46 +155,23 @@ func generatePortRules(buffer *bytes.Buffer, chain, proto string, ports []string
 	}
 }
 
-
-// file: firewall/engine.go (Tambahkan di baris paling bawah)
-
-// Teardown menghapus SELURUH rules, chains, dan ipset RAF dari Kernel (Sama seperti csf -f / csf -x)
 func Teardown() {
-	utils.LogInfo("Initiating Total Firewall Flush (Teardown Sequence)...")
-
-	targets := []bool{false} // IPv4
-	if config.CoreData.Config["RAF_IPV6"] == "1" {
-		targets = append(targets, true) // IPv6
-	}
+	utils.LogWarn("Initiating Total Firewall Flush (Teardown Sequence)...")
+	targets := []bool{false} 
+	if config.CoreData.Config["RAF_IPV6"] == "1" { targets = append(targets, true) }
 
 	for _, isIPv6 := range targets {
 		bin := "iptables"
 		if isIPv6 { bin = "ip6tables" }
-
-		// 1. Cabut Hook Utama
 		exec.Command(bin, "-D", "INPUT", "-j", "RAF_INPUT").Run()
 		exec.Command(bin, "-D", "OUTPUT", "-j", "RAF_OUTPUT").Run()
-
-		// 2. Flush (Kosongkan Isi Chain)
 		chains := []string{"RAF_INPUT", "RAF_OUTPUT", "RAF_ALLOW", "RAF_DENY", "RAF_ADVANCED"}
-		for _, chain := range chains {
-			exec.Command(bin, "-F", chain).Run()
-		}
-
-		// 3. Delete (Hapus Nama Chain dari Iptables)
-		for _, chain := range chains {
-			exec.Command(bin, "-X", chain).Run()
-		}
+		for _, chain := range chains { exec.Command(bin, "-F", chain).Run() }
+		for _, chain := range chains { exec.Command(bin, "-X", chain).Run() }
 	}
-
-	// 4. Hancurkan IPSet dari Memori (RAM)
-	// Kita hancurkan IPSet Inti. (Catatan: IPSet tidak bisa dihancurkan jika masih menempel di iptables,
-	// itulah mengapa langkah 1, 2, dan 3 di atas wajib dilakukan terlebih dahulu).
 	exec.Command("ipset", "destroy", "RAF_ALLOW").Run()
 	exec.Command("ipset", "destroy", "RAF_DENY").Run()
 	exec.Command("ipset", "destroy", "RAF_6_ALLOW").Run()
 	exec.Command("ipset", "destroy", "RAF_6_DENY").Run()
-
-	utils.LogInfo("Firewall flushed and disabled. Kernel is now 100% clean.")
+	utils.LogInfo("RAF Firewall flushed and disabled.")
 }
-
