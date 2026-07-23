@@ -11,7 +11,6 @@ import (
 	"strings"
 	"syscall"
 	"raf/config"
-	"raf/firewall"
 	"raf/lfd"
 	"raf/utils"
 )
@@ -100,16 +99,11 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 			reason := payload.Reason
 			if payload.Port != "" { reason = fmt.Sprintf("[Port: %s] %s", payload.Port, reason) }
 			
-			// Eksekusi temp ban menggunakan engine LFD
 			lfd.ExecuteBan(payload.IP, reason, dur)
-			if payload.Action == "TEMP_ALLOW" {
-				// Khusus Temp Allow, kita injek langsung ke IPSet khusus (Opsional untuk pengembangan lanjut)
-				// Untuk sekarang, kita kembalikan status OK
-			}
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s action applied on %s for %d seconds.\n", payload.Action, payload.IP, dur)))
 
 		case "FLUSH_TEMP":
-			lfd.FlushAllTempBans() // Pastikan fungsi ini ada di lfd/engine.go
+			lfd.FlushAllTempBans()
 			conn.Write([]byte("SUCCESS: All Temporary Bans have been cleared.\n"))
 
 		case "FLUSH_DENY":
@@ -123,16 +117,9 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 	}
 }
 
-// file: ipc/server.go
-
-// appendToFile menulis list permanen ke disk, dengan proteksi Anti-Injection File Format
 func appendToFile(path, ip, reason string) {
-	if reason == "" { 
-		reason = "Manual Override" 
-	}
+	if reason == "" { reason = "Manual Override" }
 	
-	// PROTEKSI FILE FORMAT INJECTION: 
-	// Pastikan tidak ada karakter \n (Enter) tersembunyi yang mencoba membuat baris Iptables baru palsu
 	reason = strings.ReplaceAll(reason, "\n", " ")
 	reason = strings.ReplaceAll(reason, "\r", "")
 	ip = strings.ReplaceAll(ip, "\n", "")
@@ -144,8 +131,6 @@ func appendToFile(path, ip, reason string) {
 		return
 	}
 	defer f.Close()
-	
-	// Tulis dengan aman
 	f.WriteString(fmt.Sprintf("%s # %s\n", ip, reason))
 }
 
