@@ -13,36 +13,61 @@ import (
 )
 
 // ==============================================================================
-// 1. REGEX THREAT SIGNATURES (ANTI FALSE-POSITIVE)
+// 1. ENTERPRISE THREAT SIGNATURES (ANTI FALSE-POSITIVE & NAT AWARE)
 // ==============================================================================
 var (
-	// SSHD: Deteksi Preauth, Invalid User, Maximum Auth, dan Failed Password
-	RegexSSHD        = regexp.MustCompile(`(?i)(?:Failed password for|Invalid user|Connection closed by authenticating user|error: maximum authentication attempts exceeded|Disconnecting authenticating user|preauth).*?(?:from)\s+([0-9a-fA-F\.:]+)`)
+	// SSHD: Mengincar kata kunci spesifik dan menangkap IP setelah kata "from"
+	RegexSSHD        = regexp.MustCompile(`(?i)(?:Failed password|Invalid user|maximum authentication attempts|Disconnecting authenticating user|preauth).*?from\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`)
 	
-	// FTPD: Menyatukan dukungan ProFTPd dan Pure-FTPd
-	RegexFTPD        = regexp.MustCompile(`(?i)(?:pure-ftpd:.*?\(\?@([0-9a-fA-F\.:]+)\) \[WARNING\] Authentication failed|proftpd\[.*?\].*?([0-9a-fA-F\.:]+) .*?: Incorrect password)`)
+	// FTPD: Pure-FTPd dan ProFTPd (Mengabaikan log jika format rusak)
+	RegexFTPD        = regexp.MustCompile(`(?i)(?:pure-ftpd:.*?\(\?@(?:::ffff:)?([a-fA-F0-9\.:]+)\).*?Authentication failed|proftpd\[.*?\].*?(?:::ffff:)?([a-fA-F0-9\.:]+)\s*(?:\[.*?\])?\s*:\s*Incorrect password)`)
 	
-	// EXIM / POSTFIX: Menangani authenticator failed, SASL login, dan Dovecot pop3/imap
-	RegexExim        = regexp.MustCompile(`(?i)(?:authenticator failed|auth failed|Authentication failed|SASL LOGIN authentication failed).*?\[([0-9a-fA-F\.:]+)\]`)
+	// EXIM / POSTFIX: Khusus Exim, kita memaksa Regex melompati IP Localhost di dalam kurung biasa "([ ... ])"
+	// dan langsung menembak IP yang menempel DENGAN TITIK DUA "]:", karena itu adalah letak IP Publik Asli.
+	RegexExim        = regexp.MustCompile(`(?i)(?:authenticator failed|auth failed|Authentication failed|SASL LOGIN).*?\[(?:IPv6:)?(?:::ffff:)?([a-fA-F0-9\.:]+)\]:`)
 	
 	// CONTROL PANELS
-	RegexCpanel      = regexp.MustCompile(`(?i)FAILED LOGIN.*?(?:from)?\s*([0-9a-fA-F\.:]+)`)
-	RegexDirectAdmin = regexp.MustCompile(`(?i)'([0-9a-fA-F\.:]+)'\s+failed login attempt`)
-	RegexPlesk       = regexp.MustCompile(`(?i)(?:plesk|failed login attempt).*?from IP ([0-9a-fA-F\.:]+)`)
-	RegexCyberPanel  = regexp.MustCompile(`(?i)(?:Login failed|Invalid login).*?(?:IP:|from)\s*([0-9a-fA-F\.:]+)`)
-	RegexAAPanel     = regexp.MustCompile(`(?i)(?:fail|invalid|Failed login).*?(?:IP:|from)\s*([0-9a-fA-F\.:]+)`)
+	RegexCpanel      = regexp.MustCompile(`(?i)FAILED LOGIN.*?(?:from)?\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`)
+	RegexDirectAdmin = regexp.MustCompile(`(?i)'(?:::ffff:)?([a-fA-F0-9\.:]+)'\s+failed login attempt`)
+	RegexPlesk       = regexp.MustCompile(`(?i)(?:plesk|failed login attempt).*?from IP\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`)
+	RegexCyberPanel  = regexp.MustCompile(`(?i)(?:Login failed|Invalid login).*?(?:IP:|from)\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`)
+	RegexAAPanel     = regexp.MustCompile(`(?i)(?:fail|invalid|Failed login).*?(?:IP:|from)\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`)
 	
-	// WAF (Layer 7 Defense to Layer 4 Block)
-	RegexModSec      = regexp.MustCompile(`(?i)ModSecurity: Access denied.*?\[client ([0-9a-fA-F\.:]+)\]`)
+	// MODSECURITY WAF: Sering kali menyertakan port "1.2.3.4:54321", kita buat capture group yang non-greedy
+	RegexModSec      = regexp.MustCompile(`(?i)ModSecurity: Access denied.*?\[client\s+(?:::ffff:)?([a-fA-F0-9\.:]+?)(?::\d+)?\]`)
 )
 
 // ==============================================================================
-// 2. LOG PARSING ENGINE
+// 2. IP SANITIZATION LAYER (MEMASTIKAN FORMAT IP 100% VALID UNTUK KERNEL)
 // ==============================================================================
 
-// parseLogLine mengekstrak log, memvalidasi IP, dan menambahkan Strike
+// cleanExtractedIP membuang sisa-sisa string kotor (seperti port atau prefix OS)
+// yang mungkin tidak sengaja terbawa oleh Regex, memastikan Firewall tidak error.
+func cleanExtractedIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "::ffff:")
+	raw = strings.TrimPrefix(raw, "IPv6:")
+	
+	// Jika formatnya adalah IPv4 yang ditempeli Port (contoh: 192.168.1.1:54321)
+	// Kita pisahkan dan ambil IP-nya saja dengan aman.
+	if strings.Contains(raw, ".") && strings.Contains(raw, ":") {
+		host, _, err := net.SplitHostPort(raw)
+		if err == nil {
+			return host
+		}
+		// Fallback manual jika format string terlampau kotor
+		parts := strings.Split(raw, ":")
+		return parts[0]
+	}
+	return raw
+}
+
+// ==============================================================================
+// 3. LOG PARSING ENGINE
+// ==============================================================================
+
 func parseLogLine(line, service string, maxLimit int) {
-	// Fitur Panic Recovery: Memastikan daemon tidak pernah crash jika ada regex anomali
+	// Fitur Panic Recovery: Memastikan daemon tidak pernah crash jika ada serangan regex anomali
 	defer func() {
 		if r := recover(); r != nil {
 			utils.LogError("Recovered from panic in LFD Regex parser: %v", r)
@@ -64,7 +89,7 @@ func parseLogLine(line, service string, maxLimit int) {
 
 	if len(match) > 1 {
 		var rawIP string
-		// Loop capture group untuk menemukan grup mana yang terisi IP
+		// Ambil IP dari Capture Group pertama yang valid/terisi
 		for i := 1; i < len(match); i++ {
 			if match[i] != "" { 
 				rawIP = match[i]
@@ -73,16 +98,16 @@ func parseLogLine(line, service string, maxLimit int) {
 		}
 
 		if rawIP != "" {
-			rawIP = strings.TrimSpace(rawIP)
+			// Bersihkan IP dari Port dan Prefix OS
+			cleanIP := cleanExtractedIP(rawIP)
 			
-			// === VALIDASI LAPIS KEDUA (DOUBLE VALIDATION) ===
-			// Memastikan bahwa string yang ditangkap benar-benar IP yang valid, bukan versi teks.
-			if net.ParseIP(rawIP) == nil {
-				return // Abaikan (False Positive berhasil ditangkal)
+			// Validasi Absolut: Pastikan ini adalah IP yang sah
+			if net.ParseIP(cleanIP) == nil {
+				return // Abaikan jika ternyata teks / string sampah
 			}
 			
-			utils.LogWarn("STRIKE ALARM: IP %s failed %s authentication.", rawIP, service)
-			AddStrike(rawIP, service, maxLimit)
+			utils.LogWarn("STRIKE ALARM: IP %s failed %s authentication.", cleanIP, service)
+			AddStrike(cleanIP, service, maxLimit)
 		}
 	}
 }
@@ -91,10 +116,10 @@ func parseLogLine(line, service string, maxLimit int) {
 func tailFile(filePath, service string, maxLimit int) {
 	t, err := tail.TailFile(filePath, tail.Config{
 		Follow:    true,
-		ReOpen:    true,  // Penting: Melanjutkan pembacaan jika log di-rotate oleh OS (logrotate)
+		ReOpen:    true,  // Penting: Melanjutkan jika log di-rotate oleh OS (logrotate)
 		MustExist: false, // Penting: Menunggu file dibuat jika belum ada
-		Poll:      true,  // Fallback aman untuk beberapa filesystem yang Inotify-nya mati
-		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END}, // Baca dari ujung bawah
+		Poll:      true,  // Fallback aman untuk File System modern
+		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END},
 	})
 	
 	if err != nil {
@@ -104,40 +129,37 @@ func tailFile(filePath, service string, maxLimit int) {
 
 	utils.LogInfo("LFD WATCHER: Active on %s [Target: %s | Limit: %d]", filePath, service, maxLimit)
 	
-	// Loop berjalan secara asinkron tanpa memblokir thread utama
 	for line := range t.Lines {
 		if line.Err != nil { continue }
-		// Kirim ke goroutine agar pembacaan log selanjutnya tidak terhambat (Non-Blocking)
+		// Lempar ke Goroutine terpisah agar proses tailing tidak tersendat (Non-Blocking)
 		go parseLogLine(line.Text, service, maxLimit)
 	}
 }
 
 // ==============================================================================
-// 3. MULTI-OS PATH RESOLVER
+// 4. MULTI-OS PATH RESOLVER (SINGLE FILE STRICT MODE)
 // ==============================================================================
 
-// findLogPath mencari eksistensi file log di berbagai direktori standar OS (RHEL/Ubuntu/Debian)
+// findLogPath mencari eksistensi file log di berbagai direktori standar OS
+// Hanya mereturn 1 path pertama yang valid untuk menghemat resource (Sistem Asli RAF)
 func findLogPath(candidates []string) string {
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil { 
 			return p 
 		}
 	}
-	// Jika tidak ada yang ditemukan, kembalikan array pertama.
-	// Library 'tail' akan menggunakan fitur MustExist: false untuk menunggu file tersebut dibuat.
+	// Fallback jika tidak ada yang ditemukan, kembalikan array pertama.
 	return candidates[0] 
 }
 
 // ==============================================================================
-// 4. LFD ENGINE ORCHESTRATOR
+// 5. LFD ENGINE ORCHESTRATOR
 // ==============================================================================
 
-// StartLFDEngine merakit dan menjalankan seluruh pekerja LFD
 func StartLFDEngine() {
 	config.CoreData.Mutex.RLock()
 	lfdEnabled := config.CoreData.Config["RAF_LF_DAEMON"]
 	
-	// Membaca batas (limits) dari file Konfigurasi
 	limits := map[string]string{
 		"SSHD":        config.CoreData.Config["RAF_LF_SSHD"],
 		"FTPD":        config.CoreData.Config["RAF_LF_FTPD"],
@@ -151,22 +173,22 @@ func StartLFDEngine() {
 	}
 	config.CoreData.Mutex.RUnlock()
 
-	// Jika master switch LFD dimatikan, hentikan inisialisasi
+	// Jika dimatikan di config, hentikan
 	if lfdEnabled != "1" { 
 		utils.LogInfo("LFD Engine is globally disabled in configuration.")
 		return 
 	}
 
-	// Nyalakan Background Memory Manager
+	// Menyalakan sistem penunjang LFD
 	go InitTempBans()
 	go TempBanManager()
 	go CleanupStrikes()
 
-	// Eksekusi Log Tailers
+	// Spawn Watchers
 	for svc, limitStr := range limits {
 		limit, err := strconv.Atoi(limitStr)
 		if err != nil || limit <= 0 { 
-			continue // Skip monitoring jika limit bernilai 0 atau tidak diset
+			continue // Skip jika limit bernilai 0
 		}
 
 		var logPath string
@@ -191,7 +213,6 @@ func StartLFDEngine() {
 			logPath = findLogPath([]string{"/var/log/modsec_audit.log", "/var/log/apache2/modsec_audit.log", "/var/log/httpd/modsec_audit.log"})
 		}
 		
-		// Spawn Goroutine untuk masing-masing service
 		go tailFile(logPath, svc, limit)
 	}
 }
