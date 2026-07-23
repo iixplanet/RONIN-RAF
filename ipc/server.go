@@ -123,10 +123,29 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 	}
 }
 
+// file: ipc/server.go
+
+// appendToFile menulis list permanen ke disk, dengan proteksi Anti-Injection File Format
 func appendToFile(path, ip, reason string) {
-	if reason == "" { reason = "Manual Override" }
-	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if reason == "" { 
+		reason = "Manual Override" 
+	}
+	
+	// PROTEKSI FILE FORMAT INJECTION: 
+	// Pastikan tidak ada karakter \n (Enter) tersembunyi yang mencoba membuat baris Iptables baru palsu
+	reason = strings.ReplaceAll(reason, "\n", " ")
+	reason = strings.ReplaceAll(reason, "\r", "")
+	ip = strings.ReplaceAll(ip, "\n", "")
+	ip = strings.ReplaceAll(ip, "\r", "")
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		utils.LogError("Failed to write to file %s: %v", path, err)
+		return
+	}
 	defer f.Close()
+	
+	// Tulis dengan aman
 	f.WriteString(fmt.Sprintf("%s # %s\n", ip, reason))
 }
 
