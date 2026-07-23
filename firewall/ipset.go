@@ -1,4 +1,4 @@
-// file: firewall/ipset.go (Perbarui argumen exec.Command)
+// file: firewall/ipset.go
 package firewall
 
 import (
@@ -9,7 +9,12 @@ import (
 	"raf/utils"
 )
 
-// RebuildIPSets membersihkan dan membuat ulang tabel ipset di dalam kernel
+// ==============================================================================
+// 1. IPSET ATOMIC BUILDER (RAM INITIALIZATION)
+// ==============================================================================
+
+// RebuildIPSets membersihkan dan membuat ulang tabel hash di dalam kernel RAM.
+// Proses ini menggunakan format batch `ipset restore` agar jutaan IP bisa dimuat dalam hitungan milidetik.
 func RebuildIPSets() error {
 	config.CoreData.Mutex.RLock()
 	defer config.CoreData.Mutex.RUnlock()
@@ -17,20 +22,23 @@ func RebuildIPSets() error {
 	var buffer bytes.Buffer
 
 	// 1. Generate Ipset Create Commands (IPv4)
-	buffer.WriteString("create RAF_ALLOW hash:net family inet hashsize 1024 maxelem 65536 -exist\n")
-	buffer.WriteString("create RAF_DENY hash:net family inet hashsize 4096 maxelem 100000 -exist\n")
+	// Menggunakan maxelem 200000 agar mampu menampung ratusan ribu input manual tanpa OOM (Out Of Memory)
+	buffer.WriteString("create RAF_ALLOW hash:net family inet hashsize 2048 maxelem 200000 -exist\n")
+	buffer.WriteString("create RAF_DENY hash:net family inet hashsize 4096 maxelem 200000 -exist\n")
+	
+	// Bersihkan sisa IP lama di RAM untuk menghindari data 'Stale' / Usang
 	buffer.WriteString("flush RAF_ALLOW\n")
 	buffer.WriteString("flush RAF_DENY\n")
 
 	// 2. Generate Ipset Create Commands (IPv6)
 	if config.CoreData.Config["RAF_IPV6"] == "1" {
-		buffer.WriteString("create RAF_6_ALLOW hash:net family inet6 hashsize 1024 maxelem 65536 -exist\n")
+		buffer.WriteString("create RAF_6_ALLOW hash:net family inet6 hashsize 1024 maxelem 100000 -exist\n")
 		buffer.WriteString("create RAF_6_DENY hash:net family inet6 hashsize 4096 maxelem 100000 -exist\n")
 		buffer.WriteString("flush RAF_6_ALLOW\n")
 		buffer.WriteString("flush RAF_6_DENY\n")
 	}
 
-	// 3. Populate Allow/Deny Lists
+	// 3. Pindahkan data dari RAM Go (CoreData) ke script Buffer IPSet
 	for _, ip := range config.CoreData.AllowList4 {
 		buffer.WriteString("add RAF_ALLOW " + ip + " -exist\n")
 	}
@@ -47,80 +55,73 @@ func RebuildIPSets() error {
 		}
 	}
 
-	// 4. MINTA INTELIGENCE MODULE UNTUK MENYIAPKAN TABEL IPSET MEREKA
+	// 4. MINTA INTELIGENCE MODULE UNTUK MENYIAPKAN TABEL MEREKA (GeoIP & Spamhaus)
 	intelligence.GenerateIpsetCommands(&buffer)
 
-	// Execute Ipset Restore in one atomic block
-	// PERUBAHAN: Tambahkan "-!" untuk mengabaikan error force exist
+	// ====================================================================
+	// EKSEKUSI ATOMIC: Menjalankan semua perintah di atas dalam 1 kali eksekusi
+	// Menggunakan flag `-!` (Force/Ignore Errors) agar Ipset tidak abort jika
+	// menemukan IP yang bertabrakan / terduplikasi secara tidak sengaja.
+	// ====================================================================
 	cmd := exec.Command("ipset", "-!", "restore")
 	cmd.Stdin = bytes.NewReader(buffer.Bytes())
 	
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		utils.LogError("Ipset Restore Failed: %s | Out: %s", err, string(out))
+		utils.LogError("Ipset RAM Allocation Failed: %s | Out: %s", err, string(out))
 		return err
 	}
 
-	utils.LogInfo("IPSets synchronized successfully (Memory Optimized).")
+	utils.LogInfo("IPSets Kernel Tables synchronized successfully (O(1) Time Complexity Achieved).")
 	return nil
 }
 
-// DynamicBan menambahkan IP ke ipset secara instan (Untuk LFD)
-func DynamicBan(ip string) {
-	isIPv6 := utils.CheckIPType(ip) == "6"
-	setName := "RAF_DENY"
-	if isIPv6 {
-		setName = "RAF_6_DENY"
-	}
+// ==============================================================================
+// 2. DYNAMIC INJECTORS (ZERO-RELOAD EXECUTORS)
+// ==============================================================================
 
-	// PERUBAHAN: Tambahkan "-!"
-	cmd := exec.Command("ipset", "-!", "add", setName, ip)
-	if err := cmd.Run(); err == nil {
-		utils.LogInfo("RAF LFD INSTANT BLOCK: %s apply to Kernel IPSet.", ip)
-	}
-}
-
-// DynamicUnban menghapus IP dari ipset (Untuk Temp Ban Expiration)
-func DynamicUnban(ip string) {
-	isIPv6 := utils.CheckIPType(ip) == "6"
-	setName := "RAF_DENY"
-	if isIPv6 {
-		setName = "RAF_6_DENY"
-	}
-
-	// PERUBAHAN: Tambahkan "-!"
-	cmd := exec.Command("ipset", "-!", "del", setName, ip)
-	if err := cmd.Run(); err == nil {
-		utils.LogInfo("RAF LFD AUTO-UNBAN: %s removed from Kernel IPSet.", ip)
-	}
-}
-
-// file: firewall/ipset.go (Tambahkan di bagian bawah)
-
-// DynamicAdd menyuntikkan IP langsung ke Kernel secara senyap (Zero-Reload)
+// DynamicAdd menyuntikkan IP secara *live* langsung ke Kernel RAM tanpa perlu me-reload Firewall.
+// listType dapat diisi dengan: "DENY" atau "ALLOW".
 func DynamicAdd(ip string, listType string) {
+	// Auto-Deteksi IP Type agar tidak salah masuk tabel
 	isIPv6 := utils.CheckIPType(ip) == "6"
-	setName := "RAF_" + listType // listType: "DENY" atau "ALLOW"
-	if isIPv6 { setName = "RAF_6_" + listType }
+	setName := "RAF_" + listType 
+	if isIPv6 { 
+		setName = "RAF_6_" + listType 
+	}
 
+	// Eksekusi senyap dengan flag pengabaian error (-!)
 	cmd := exec.Command("ipset", "-!", "add", setName, ip)
 	if err := cmd.Run(); err == nil {
-		utils.LogInfo("DYNAMIC INJECT: %s applied to Kernel Set [%s]", ip, setName)
+		utils.LogInfo("DYNAMIC INJECT: %s seamlessly applied to Kernel Set [%s]", ip, setName)
 	}
 }
 
-// DynamicDel mencabut IP dari Kernel secara senyap
+// DynamicDel mencabut IP secara *live* dari Kernel RAM.
 func DynamicDel(ip string, listType string) {
 	isIPv6 := utils.CheckIPType(ip) == "6"
 	setName := "RAF_" + listType 
-	if isIPv6 { setName = "RAF_6_" + listType }
+	if isIPv6 { 
+		setName = "RAF_6_" + listType 
+	}
 
 	cmd := exec.Command("ipset", "-!", "del", setName, ip)
 	if err := cmd.Run(); err == nil {
-		utils.LogInfo("DYNAMIC REVOKE: %s removed from Kernel Set [%s]", ip, setName)
+		utils.LogInfo("DYNAMIC REVOKE: %s seamlessly removed from Kernel Set [%s]", ip, setName)
 	}
 }
 
-// (Fungsi DynamicBan & DynamicUnban lama yang dipakai LFD kita biarkan atau arahkan ke fungsi di atas)
-func DynamicBan(ip string) { DynamicAdd(ip, "DENY") }
-func DynamicUnban(ip string) { DynamicDel(ip, "DENY") }
+// ==============================================================================
+// 3. LFD ENGINE WRAPPERS
+// ==============================================================================
+// Wrapper khusus untuk dipanggil oleh mesin Login Failure Daemon (LFD).
+
+// DynamicBan adalah alias untuk menembakkan Temporary Block ke tabel DENY.
+func DynamicBan(ip string) {
+	DynamicAdd(ip, "DENY")
+}
+
+// DynamicUnban adalah alias untuk mencabut Temporary Block dari tabel DENY saat kadaluwarsa.
+func DynamicUnban(ip string) {
+	DynamicDel(ip, "DENY")
+}
