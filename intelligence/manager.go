@@ -34,7 +34,7 @@ var (
 	ActiveCCDenyPorts  map[string]string
 	ActiveCCAllowPorts map[string]string
 	
-	// Ultra-Precise IPv4 & CIDR Regex (Mencegah false positive seperti "v1.2.3.4")
+	// Ultra-Precise IPv4 & CIDR Regex (Mencegah false positive)
 	ipv4Regex = regexp.MustCompile(`\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:\/(?:[1-2]?[0-9]|3[0-2]))?\b`)
 )
 
@@ -54,7 +54,7 @@ func InitAndParse() {
 	config.CoreData.Mutex.RUnlock()
 
 	// 1. Status Global Blocklist
-	BlocklistEnabled = (blEnabledStr == "1")
+	BlocklistEnabled = (blEnabledStr == "1" || strings.ToLower(blEnabledStr) == "true")
 	globalInterval := 86400 // Default 24 Jam
 	if val, err := strconv.Atoi(blGlobalIntervalStr); err == nil && val > 0 {
 		globalInterval = val
@@ -99,7 +99,6 @@ func parseCCPorts(raw string) map[string]string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" { return res }
 
-	// Dukungan format pemisah pipa atau spasi: CN,RU:22,21|KP:80
 	rules := strings.FieldsFunc(raw, func(c rune) bool { return c == '|' || c == ' ' })
 	for _, rule := range rules {
 		parts := strings.Split(rule, ":")
@@ -135,25 +134,22 @@ func GenerateIpsetCommands(buffer *bytes.Buffer) {
 		buffer.WriteString(fmt.Sprintf("create cc_%s hash:net family inet hashsize 2048 maxelem 200000 -exist\nflush cc_%s\n", cc, cc))
 	}
 	
-	// Global Blocklists membutuhkan ruang memori sangat besar (maxelem 500000)
+	// Global Blocklists
 	if BlocklistEnabled {
 		for _, bl := range ActiveBlocklists {
 			buffer.WriteString(fmt.Sprintf("create bl_%s hash:net family inet hashsize 8192 maxelem 500000 -exist\n", bl.Name))
-			// Catatan: Kita tidak nge-flush tabel Blocklist di sini agar koneksi tidak terputus saat proses download berlangsung
 		}
 	}
 }
 
 // GenerateIptablesHooks mengaitkan memori IPSet ke dalam skema Iptables
 func GenerateIptablesHooks(buffer *bytes.Buffer) {
-	// 1. Global Blocklists (Prioritas Eksekusi Tertinggi)
 	if BlocklistEnabled {
 		for _, bl := range ActiveBlocklists {
 			buffer.WriteString(fmt.Sprintf("-A RAF_INPUT -m set --match-set bl_%s src -j DROP\n", bl.Name))
 		}
 	}
 
-	// 2. GeoIP CC Deny & CC Deny Ports
 	for _, cc := range ActiveCCDeny {
 		if ports, exists := ActiveCCDenyPorts[cc]; exists {
 			buffer.WriteString(fmt.Sprintf("-A RAF_DENY -m set --match-set cc_%s src -p tcp -m multiport --dports %s -j DROP\n", cc, ports))
@@ -163,7 +159,6 @@ func GenerateIptablesHooks(buffer *bytes.Buffer) {
 		}
 	}
 
-	// 3. GeoIP CC Allow & CC Allow Ports
 	for _, cc := range ActiveCCAllow {
 		if ports, exists := ActiveCCAllowPorts[cc]; exists {
 			buffer.WriteString(fmt.Sprintf("-A RAF_ALLOW -m set --match-set cc_%s src -p tcp -m multiport --dports %s -j ACCEPT\n", cc, ports))
@@ -176,17 +171,13 @@ func GenerateIptablesHooks(buffer *bytes.Buffer) {
 
 // StartBackgroundWorkers memulai semua proses download intelligence tanpa membuat Daemon Hang
 func StartBackgroundWorkers() {
-	// Load GeoIP (Country Zones) dari disk lokal
 	if len(ActiveCCDeny) > 0 { go loadZonesToIpset(ActiveCCDeny) }
 	if len(ActiveCCAllow) > 0 { go loadZonesToIpset(ActiveCCAllow) }
 
-	// Mulai penjadwalan download Global Blocklists dari internet
 	if BlocklistEnabled {
 		for _, bl := range ActiveBlocklists {
 			go func(b Blocklist) {
-				// Eksekusi instan saat daemon hidup
 				downloadAndInjectBlocklist(b)
-				// Eksekusi berulang sesuai Interval (Loop Daemon)
 				for {
 					time.Sleep(b.Interval)
 					downloadAndInjectBlocklist(b)
@@ -198,16 +189,52 @@ func StartBackgroundWorkers() {
 	}
 }
 
-// loadZonesToIpset membaca file data negara (misal: /usr/local/ronin/lib/raf/zone/cn.zone)
+// downloadZoneFile mengunduh blok IP Negara secara otomatis dari ipdeny.com
+func downloadZoneFile(cc string) error {
+	os.MkdirAll(ZoneDir, 0755)
+	url := fmt.Sprintf("https://www.ipdeny.com/ipblocks/data/countries/%s.zone", strings.ToLower(cc))
+	utils.LogInfo("GeoIP Intel: Downloading IP database for country [%s]...", cc)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil { return err }
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; RoninArmor/1.0)")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != 200 {
+		return fmt.Errorf("failed to fetch zone. HTTP Status: %v", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+
+	path := filepath.Join(ZoneDir, strings.ToLower(cc)+".zone")
+	out, err := os.Create(path)
+	if err != nil { return err }
+	defer out.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
+// loadZonesToIpset membaca file data negara, otomatis mendownload jika belum ada
 func loadZonesToIpset(ccList []string) {
 	var buffer bytes.Buffer
 	count := 0
 
 	for _, cc := range ccList {
 		path := filepath.Join(ZoneDir, strings.ToLower(cc)+".zone")
+		
+		// AUTO-DOWNLOAD: Jika file .zone belum ada, download langsung!
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			errDL := downloadZoneFile(cc)
+			if errDL != nil {
+				utils.LogError("GeoIP Intel: Failed to download zone [%s]: %v", cc, errDL)
+				continue // Lewati negara ini jika gagal didownload
+			}
+		}
+
 		file, err := os.Open(path)
 		if err != nil {
-			utils.LogWarn("GeoIP Zone file not found: %s", path)
+			utils.LogWarn("GeoIP Zone file is unreadable: %s", path)
 			continue
 		}
 
@@ -237,7 +264,6 @@ func loadZonesToIpset(ccList []string) {
 func downloadAndInjectBlocklist(bl Blocklist) {
 	utils.LogInfo("Global Intel: Downloading Threat Feed [%s]...", bl.Name)
 
-	// Custom HTTP Client agar tidak diblokir oleh Spamhaus / Server Keamanan lainnya
 	req, err := http.NewRequest("GET", bl.URL, nil)
 	if err != nil { return }
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; RoninArmor/1.0; +https://roninarmor.com)")
@@ -245,18 +271,16 @@ func downloadAndInjectBlocklist(bl Blocklist) {
 	client := &http.Client{ Timeout: 45 * time.Second }
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != 200 {
-		utils.LogWarn("Global Intel: Failed to fetch [%s] (Status: %v) -> Retaining old IP data.", bl.Name, err)
+		utils.LogWarn("Global Intel: Failed to fetch [%s] -> Retaining old IP data.", bl.Name)
 		return
 	}
 	defer resp.Body.Close()
 
-	// Batasi ukuran payload maks 50MB (Mencegah serangan Memory Leak OOM)
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
 	if err != nil { return }
 
 	ips := ipv4Regex.FindAllString(string(bodyBytes), -1)
 
-	// SAFE FLUSH: Hanya bersihkan tabel JIKA BERHASIL mengunduh IP baru
 	if len(ips) > 0 {
 		var buffer bytes.Buffer
 		buffer.WriteString(fmt.Sprintf("flush bl_%s\n", bl.Name)) 
@@ -273,6 +297,6 @@ func downloadAndInjectBlocklist(bl Blocklist) {
 			utils.LogError("Global Intel: Failed to inject [%s] to IPSet.", bl.Name)
 		}
 	} else {
-		utils.LogWarn("Global Intel: Feed [%s] returned 0 valid IPs. Retaining old database.", bl.Name)
+		utils.LogWarn("Global Intel: Feed [%s] returned 0 valid IPs.", bl.Name)
 	}
 }
