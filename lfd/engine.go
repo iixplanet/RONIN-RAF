@@ -31,11 +31,10 @@ type TempBanRecord struct {
 var (
 	StrikeMap      = make(map[string]map[string]*StrikeRecord)
 	TempBans       = make(map[string]*TempBanRecord)
-	TempBanHistory = make(map[string]int) // SINKRONISASI: Mencatat berapa kali IP masuk Temp Ban
+	TempBanHistory = make(map[string]int)
 	EngineMutex    sync.Mutex
 )
 
-// ... InitTempBans() dan SaveTempBans() tetap sama ...
 func InitTempBans() {
 	os.MkdirAll(filepath.Dir(TempBanFile), 0755)
 	file, err := os.Open(TempBanFile)
@@ -95,7 +94,6 @@ func AddStrike(ip, service string, maxLimit int) {
 	EngineMutex.Unlock()
 
 	if currentCount >= maxLimit {
-		// SINKRONISASI: Baca durasi Temp Ban dari Config
 		config.CoreData.Mutex.RLock()
 		durStr := config.CoreData.Config["RAF_LF_TEMP_BAN_TIME"]
 		triggerStr := config.CoreData.Config["RAF_LF_PERM_BAN_TRIGGER"]
@@ -113,14 +111,13 @@ func AddStrike(ip, service string, maxLimit int) {
 
 		reason := fmt.Sprintf("%s Bruteforce Detected (%d strikes)", service, currentCount)
 
-		// SINKRONISASI: Eskalasi Permanent Ban
 		if histCount >= trigger {
 			utils.LogWarn("LFD ESCALATION: %s hit Temp Ban %d times. Converted to Permanent Ban.", ip, histCount)
 			appendToDeny(ip, "LFD Escalation: Repeat Offender ("+service+")")
-			firewall.DynamicBan(ip) // Pastikan masuk kernel permanen
+			firewall.DynamicBan(ip)
 			
 			EngineMutex.Lock()
-			delete(TempBans, ip) // Hapus dari temp
+			delete(TempBans, ip)
 			delete(StrikeMap, ip)
 			EngineMutex.Unlock()
 			SaveTempBans()
@@ -155,7 +152,7 @@ func ExecuteBan(ip, reason string, durationSeconds int) {
 
 	SaveTempBans()
 	firewall.DynamicBan(ip)
-	utils.LogWarn("RAF LFD ENFORCEMENT: %s Banned for %d secs. Reason: %s", ip, durationSeconds, reason)
+	utils.LogWarn("LFD ENFORCEMENT: %s Banned for %d secs. Reason: %s", ip, durationSeconds, reason)
 }
 
 func ExecuteUnban(ip string) {
@@ -164,7 +161,19 @@ func ExecuteUnban(ip string) {
 	EngineMutex.Unlock()
 	SaveTempBans()
 	firewall.DynamicUnban(ip)
-	utils.LogInfo("RAF LFD MANUAL UNBAN: %s removed by Admin Command.", ip)
+	utils.LogInfo("LFD MANUAL UNBAN: %s removed by Admin Command.", ip)
+}
+
+// Fungsi Baru untuk System Override Clear All Temp Bans
+func FlushAllTempBans() {
+	EngineMutex.Lock()
+	for ip := range TempBans {
+		go firewall.DynamicUnban(ip)
+		delete(TempBans, ip)
+	}
+	EngineMutex.Unlock()
+	SaveTempBans()
+	utils.LogWarn("ADMIN ACTION: All LFD Temporary Bans have been flushed.")
 }
 
 func TempBanManager() {
@@ -178,7 +187,7 @@ func TempBanManager() {
 			if now.After(record.ExpiresAt) {
 				delete(TempBans, ip)
 				go firewall.DynamicUnban(ip)
-				utils.LogInfo("RAF LFD AUTO-UNBAN: Temporary ban expired for %s", ip)
+				utils.LogInfo("LFD AUTO-UNBAN: Temporary ban expired for %s", ip)
 				unbanned = true
 			}
 		}
@@ -193,7 +202,6 @@ func CleanupStrikes() {
 	for range ticker.C {
 		now := time.Now()
 
-		// SINKRONISASI: Baca Forgive Interval dari Config
 		config.CoreData.Mutex.RLock()
 		intervalStr := config.CoreData.Config["RAF_LF_INTERVAL"]
 		config.CoreData.Mutex.RUnlock()
