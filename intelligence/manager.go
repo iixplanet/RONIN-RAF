@@ -181,17 +181,16 @@ func downloadZoneFile(cc string) error {
 	os.MkdirAll(ZoneDir, 0755)
 	ccLower := strings.ToLower(cc)
 	
-	// Siapkan 2 penyedia layanan gratis sebagai *Failover*
 	mirrors := []string{
-		// Mirror 1: Github CDN (Super Cepat & Tahan Banting, jarang down)
+		// Mirror 1: Github CDN (Sangat Cepat & Stabil)
 		fmt.Sprintf("https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/%s.cidr", ccLower),
 		// Mirror 2: IPDeny (Fallback Asli)
 		fmt.Sprintf("https://www.ipdeny.com/ipblocks/data/countries/%s.zone", ccLower),
 	}
 
 	var lastErr error
-	for _, url := range mirrors {
-		utils.LogInfo("GeoIP Intel: Fetching database for [%s] via %s", cc, url)
+	for i, url := range mirrors {
+		utils.LogInfo("GeoIP Intel: Fetching Mirror %d for country [%s]...", i+1, strings.ToUpper(cc))
 
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil { 
@@ -200,25 +199,22 @@ func downloadZoneFile(cc string) error {
 		}
 		
 		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-		// Timeout dipersingkat menjadi 15 detik agar cepat pindah Mirror jika ngelag
 		client := &http.Client{Timeout: 15 * time.Second}
 		resp, err := client.Do(req)
 		
 		if err != nil {
-			utils.LogWarn("GeoIP Intel: Mirror timeout/error. Switching to next mirror...")
+			utils.LogWarn("GeoIP Intel: Mirror %d failed (Timeout/Block). Trying next mirror...", i+1)
 			lastErr = fmt.Errorf("network error: %v", err)
 			continue
 		}
 
 		if resp.StatusCode != 200 {
 			resp.Body.Close()
-			utils.LogWarn("GeoIP Intel: Mirror returned HTTP %d. Switching to next mirror...", resp.StatusCode)
+			utils.LogWarn("GeoIP Intel: Mirror %d returned HTTP %d. Trying next mirror...", i+1, resp.StatusCode)
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 			continue
 		}
 
-		// Jika berhasil, tulis file
 		path := filepath.Join(ZoneDir, ccLower+".zone")
 		out, err := os.Create(path)
 		if err != nil { 
@@ -231,7 +227,8 @@ func downloadZoneFile(cc string) error {
 		resp.Body.Close()
 
 		if err == nil {
-			return nil // SUKSES DOWNLOAD! Langsung keluar dari fungsi
+			utils.LogInfo("GeoIP Intel: Successfully downloaded zone [%s] from Mirror %d", strings.ToUpper(cc), i+1)
+			return nil 
 		}
 		lastErr = err
 	}
@@ -253,9 +250,10 @@ func loadZonesToIpset(ccList []string) {
 		path := filepath.Join(ZoneDir, strings.ToLower(cc)+".zone")
 		
 		info, errStat := os.Stat(path)
+		// Jika ukuran file kurang dari 50 bytes (rusak/kosong), download ulang
 		if os.IsNotExist(errStat) || (errStat == nil && info.Size() < 50) {
 			if errDL := downloadZoneFile(cc); errDL != nil {
-				utils.LogError("GeoIP Intel: Failed to download zone [%s]: %v", cc, errDL)
+				utils.LogError("GeoIP Intel: Total failure downloading zone [%s]: %v", cc, errDL)
 				continue
 			}
 		}
