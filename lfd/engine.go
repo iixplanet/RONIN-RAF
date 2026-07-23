@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,84 +29,60 @@ type TempBanRecord struct {
 }
 
 var (
-	StrikeMap   = make(map[string]map[string]*StrikeRecord) // map[IP]map[Service]Record
-	TempBans    = make(map[string]*TempBanRecord)           // map[IP]TempBan
-	EngineMutex sync.Mutex
+	StrikeMap      = make(map[string]map[string]*StrikeRecord)
+	TempBans       = make(map[string]*TempBanRecord)
+	TempBanHistory = make(map[string]int) // SINKRONISASI: Mencatat berapa kali IP masuk Temp Ban
+	EngineMutex    sync.Mutex
 )
 
-// InitTempBans membaca blokiran sementara yang tersisa dari disk saat RAF di-restart
+// ... InitTempBans() dan SaveTempBans() tetap sama ...
 func InitTempBans() {
 	os.MkdirAll(filepath.Dir(TempBanFile), 0755)
 	file, err := os.Open(TempBanFile)
-	if err != nil {
-		return // File belum ada, abaikan
-	}
+	if err != nil { return }
 	defer file.Close()
 
 	now := time.Now()
 	scanner := bufio.NewScanner(file)
-	
 	EngineMutex.Lock()
 	defer EngineMutex.Unlock()
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" { continue }
-
-		// Format: IP|UnixExpirationTimestamp|Reason
 		parts := strings.SplitN(line, "|", 3)
 		if len(parts) == 3 {
 			ip := parts[0]
 			var expInt int64
 			fmt.Sscanf(parts[1], "%d", &expInt)
 			expTime := time.Unix(expInt, 0)
-
-			// Jika belum expired, masukkan ke memori
 			if expTime.After(now) {
-				TempBans[ip] = &TempBanRecord{
-					IP:        ip,
-					ExpiresAt: expTime,
-					Reason:    parts[2],
-				}
-				// Pastikan tetap ada di ipset
+				TempBans[ip] = &TempBanRecord{ IP: ip, ExpiresAt: expTime, Reason: parts[2] }
 				go firewall.DynamicBan(ip)
 			}
 		}
 	}
 }
 
-// SaveTempBans menyimpan state memori ke disk
 func SaveTempBans() {
 	EngineMutex.Lock()
 	defer EngineMutex.Unlock()
-
 	file, err := os.OpenFile(TempBanFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil { return }
 	defer file.Close()
-
 	for _, record := range TempBans {
-		line := fmt.Sprintf("%s|%d|%s\n", record.IP, record.ExpiresAt.Unix(), record.Reason)
-		file.WriteString(line)
+		file.WriteString(fmt.Sprintf("%s|%d|%s\n", record.IP, record.ExpiresAt.Unix(), record.Reason))
 	}
 }
 
-// AddStrike menambah poin pelanggaran. Jika melebihi limit, IP diblokir sementara (Default: 3600 detik/1 jam)
 func AddStrike(ip, service string, maxLimit int) {
-	// 1. Cek Anti-Lockout
 	config.CoreData.Mutex.RLock()
 	isSafe := false
-	for _, safeIP := range config.CoreData.AllowList4 {
-		if ip == safeIP { isSafe = true; break }
-	}
-	for _, safeIP := range config.CoreData.AllowList6 {
-		if ip == safeIP { isSafe = true; break }
-	}
+	for _, safeIP := range config.CoreData.AllowList4 { if ip == safeIP { isSafe = true; break } }
+	for _, safeIP := range config.CoreData.AllowList6 { if ip == safeIP { isSafe = true; break } }
 	config.CoreData.Mutex.RUnlock()
 
-	if isSafe {
-		utils.LogWarn("LFD AVERTED: %s Bruteforce detected, but IP is in Whitelist/Local.", ip)
-		return
-	}
+	if isSafe { return }
 
 	EngineMutex.Lock()
 	if StrikeMap[ip] == nil { StrikeMap[ip] = make(map[string]*StrikeRecord) }
@@ -118,25 +95,57 @@ func AddStrike(ip, service string, maxLimit int) {
 	EngineMutex.Unlock()
 
 	if currentCount >= maxLimit {
+		// SINKRONISASI: Baca durasi Temp Ban dari Config
+		config.CoreData.Mutex.RLock()
+		durStr := config.CoreData.Config["RAF_LF_TEMP_BAN_TIME"]
+		triggerStr := config.CoreData.Config["RAF_LF_PERM_BAN_TRIGGER"]
+		config.CoreData.Mutex.RUnlock()
+
+		duration := 3600
+		trigger := 4
+		if d, err := strconv.Atoi(durStr); err == nil && d > 0 { duration = d }
+		if t, err := strconv.Atoi(triggerStr); err == nil && t > 0 { trigger = t }
+
+		EngineMutex.Lock()
+		TempBanHistory[ip]++
+		histCount := TempBanHistory[ip]
+		EngineMutex.Unlock()
+
 		reason := fmt.Sprintf("%s Bruteforce Detected (%d strikes)", service, currentCount)
-		ExecuteBan(ip, reason, 3600) // Default 1 jam ban (3600 detik)
-		
-		// Reset strike setelah diblokir
+
+		// SINKRONISASI: Eskalasi Permanent Ban
+		if histCount >= trigger {
+			utils.LogWarn("LFD ESCALATION: %s hit Temp Ban %d times. Converted to Permanent Ban.", ip, histCount)
+			appendToDeny(ip, "LFD Escalation: Repeat Offender ("+service+")")
+			firewall.DynamicBan(ip) // Pastikan masuk kernel permanen
+			
+			EngineMutex.Lock()
+			delete(TempBans, ip) // Hapus dari temp
+			delete(StrikeMap, ip)
+			EngineMutex.Unlock()
+			SaveTempBans()
+			return
+		}
+
+		ExecuteBan(ip, reason, duration)
 		EngineMutex.Lock()
 		delete(StrikeMap, ip)
 		EngineMutex.Unlock()
 	}
 }
 
-// ExecuteBan menembakkan eksekusi pemblokiran
+func appendToDeny(ip, reason string) {
+	f, _ := os.OpenFile(config.DenyFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	defer f.Close()
+	f.WriteString(fmt.Sprintf("%s # %s\n", ip, reason))
+}
+
 func ExecuteBan(ip, reason string, durationSeconds int) {
 	EngineMutex.Lock()
-	// Mencegah block ganda
 	if _, exists := TempBans[ip]; exists {
 		EngineMutex.Unlock()
 		return
 	}
-	
 	TempBans[ip] = &TempBanRecord{
 		IP:        ip,
 		ExpiresAt: time.Now().Add(time.Duration(durationSeconds) * time.Second),
@@ -146,10 +155,18 @@ func ExecuteBan(ip, reason string, durationSeconds int) {
 
 	SaveTempBans()
 	firewall.DynamicBan(ip)
-	utils.LogWarn("LFD ENFORCEMENT: %s Banned for %d secs. Reason: %s", ip, durationSeconds, reason)
+	utils.LogWarn("RAF LFD ENFORCEMENT: %s Banned for %d secs. Reason: %s", ip, durationSeconds, reason)
 }
 
-// TempBanManager berjalan di background mengecek IP yang masa hukumannya sudah habis
+func ExecuteUnban(ip string) {
+	EngineMutex.Lock()
+	if _, exists := TempBans[ip]; exists { delete(TempBans, ip) }
+	EngineMutex.Unlock()
+	SaveTempBans()
+	firewall.DynamicUnban(ip)
+	utils.LogInfo("RAF LFD MANUAL UNBAN: %s removed by Admin Command.", ip)
+}
+
 func TempBanManager() {
 	ticker := time.NewTicker(10 * time.Second)
 	for range ticker.C {
@@ -161,27 +178,34 @@ func TempBanManager() {
 			if now.After(record.ExpiresAt) {
 				delete(TempBans, ip)
 				go firewall.DynamicUnban(ip)
-				utils.LogInfo("LFD AUTO-UNBAN: Temporary ban expired for %s", ip)
+				utils.LogInfo("RAF LFD AUTO-UNBAN: Temporary ban expired for %s", ip)
 				unbanned = true
 			}
 		}
 		EngineMutex.Unlock()
 
-		if unbanned {
-			SaveTempBans()
-		}
+		if unbanned { SaveTempBans() }
 	}
 }
 
-// CleanupStrikes membersihkan strike usang (1 jam tidak diulangi = dimaafkan)
 func CleanupStrikes() {
 	ticker := time.NewTicker(15 * time.Minute)
 	for range ticker.C {
 		now := time.Now()
+
+		// SINKRONISASI: Baca Forgive Interval dari Config
+		config.CoreData.Mutex.RLock()
+		intervalStr := config.CoreData.Config["RAF_LF_INTERVAL"]
+		config.CoreData.Mutex.RUnlock()
+
+		interval := 3600
+		if i, err := strconv.Atoi(intervalStr); err == nil && i > 0 { interval = i }
+		forgiveDur := time.Duration(interval) * time.Second
+
 		EngineMutex.Lock()
 		for ip, services := range StrikeMap {
 			for svc, record := range services {
-				if now.Sub(record.LastStrike) > 1*time.Hour {
+				if now.Sub(record.LastStrike) > forgiveDur {
 					delete(services, svc)
 				}
 			}
@@ -189,19 +213,4 @@ func CleanupStrikes() {
 		}
 		EngineMutex.Unlock()
 	}
-}
-
-// file: lfd/engine.go (Tambahkan di bawah)
-
-// ExecuteUnban menghapus IP 
-func ExecuteUnban(ip string) {
-	EngineMutex.Lock()
-	if _, exists := TempBans[ip]; exists {
-		delete(TempBans, ip)
-	}
-	EngineMutex.Unlock()
-	
-	SaveTempBans()
-	firewall.DynamicUnban(ip)
-	utils.LogInfo("LFD MANUAL UNBAN: %s removed by Admin Command.", ip)
 }
