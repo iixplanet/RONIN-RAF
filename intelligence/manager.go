@@ -176,42 +176,70 @@ func StartBackgroundWorkers() {
 	}
 }
 
+// MULTI-MIRROR AUTO DOWNLOADER
 func downloadZoneFile(cc string) error {
 	os.MkdirAll(ZoneDir, 0755)
-	url := fmt.Sprintf("https://www.ipdeny.com/ipblocks/data/countries/%s.zone", strings.ToLower(cc))
-	utils.LogInfo("GeoIP Intel: Fetching remote database for country [%s]...", cc)
-
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil { return err }
+	ccLower := strings.ToLower(cc)
 	
-	// Gunakan User-Agent Standard Browser agar tidak diblok oleh Cloudflare/IPDeny
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-
-	client := &http.Client{Timeout: 45 * time.Second}
-	resp, err := client.Do(req)
-	
-	// Perbaikan BUG FATAL: Cek error sebelum memanggil resp.StatusCode
-	if err != nil {
-		return fmt.Errorf("network connection error: %v", err)
-	}
-	defer resp.Body.Close()
-
-	// Jika status bukan 200 OK, batalkan pembuatan file
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("HTTP Blocked/Failed. Status: %d", resp.StatusCode)
+	// Siapkan 2 penyedia layanan gratis sebagai *Failover*
+	mirrors := []string{
+		// Mirror 1: Github CDN (Super Cepat & Tahan Banting, jarang down)
+		fmt.Sprintf("https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/%s.cidr", ccLower),
+		// Mirror 2: IPDeny (Fallback Asli)
+		fmt.Sprintf("https://www.ipdeny.com/ipblocks/data/countries/%s.zone", ccLower),
 	}
 
-	path := filepath.Join(ZoneDir, strings.ToLower(cc)+".zone")
-	out, err := os.Create(path)
-	if err != nil { return err }
-	defer out.Close()
+	var lastErr error
+	for _, url := range mirrors {
+		utils.LogInfo("GeoIP Intel: Fetching database for [%s] via %s", cc, url)
 
-	_, err = io.Copy(out, resp.Body)
-	return err
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil { 
+			lastErr = err
+			continue 
+		}
+		
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+		// Timeout dipersingkat menjadi 15 detik agar cepat pindah Mirror jika ngelag
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		
+		if err != nil {
+			utils.LogWarn("GeoIP Intel: Mirror timeout/error. Switching to next mirror...")
+			lastErr = fmt.Errorf("network error: %v", err)
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			resp.Body.Close()
+			utils.LogWarn("GeoIP Intel: Mirror returned HTTP %d. Switching to next mirror...", resp.StatusCode)
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			continue
+		}
+
+		// Jika berhasil, tulis file
+		path := filepath.Join(ZoneDir, ccLower+".zone")
+		out, err := os.Create(path)
+		if err != nil { 
+			resp.Body.Close()
+			return err 
+		}
+
+		_, err = io.Copy(out, resp.Body)
+		out.Close()
+		resp.Body.Close()
+
+		if err == nil {
+			return nil // SUKSES DOWNLOAD! Langsung keluar dari fungsi
+		}
+		lastErr = err
+	}
+
+	return fmt.Errorf("All mirrors failed. Last error: %v", lastErr)
 }
 
 func loadZonesToIpset(ccList []string) {
-	// Proteksi Global Panic Recovery khusus untuk thread ini
 	defer func() {
 		if r := recover(); r != nil {
 			utils.LogError("FATAL: Panic recovered in GeoIP loader: %v", r)
@@ -225,7 +253,6 @@ func loadZonesToIpset(ccList []string) {
 		path := filepath.Join(ZoneDir, strings.ToLower(cc)+".zone")
 		
 		info, errStat := os.Stat(path)
-		// Eksekusi download jika file tidak ada atau ukurannya 0 byte (rusak)
 		if os.IsNotExist(errStat) || (errStat == nil && info.Size() < 50) {
 			if errDL := downloadZoneFile(cc); errDL != nil {
 				utils.LogError("GeoIP Intel: Failed to download zone [%s]: %v", cc, errDL)
@@ -264,7 +291,6 @@ func loadZonesToIpset(ccList []string) {
 }
 
 func downloadAndInjectBlocklist(bl Blocklist) {
-	// Proteksi Global Panic Recovery
 	defer func() {
 		if r := recover(); r != nil {
 			utils.LogError("FATAL: Panic recovered in Blocklist loader: %v", r)
@@ -280,7 +306,6 @@ func downloadAndInjectBlocklist(bl Blocklist) {
 	client := &http.Client{ Timeout: 45 * time.Second }
 	resp, err := client.Do(req)
 	
-	// Perbaikan BUG FATAL: Cek error sebelum memanggil resp.StatusCode
 	if err != nil {
 		utils.LogWarn("Global Intel: Network error fetching [%s]: %v", bl.Name, err)
 		return
