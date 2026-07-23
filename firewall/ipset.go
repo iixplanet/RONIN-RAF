@@ -94,3 +94,33 @@ func DynamicUnban(ip string) {
 		utils.LogInfo("RAF LFD AUTO-UNBAN: %s removed from Kernel IPSet.", ip)
 	}
 }
+
+// file: firewall/ipset.go (Tambahkan di bagian bawah)
+
+// DynamicAdd menyuntikkan IP langsung ke Kernel secara senyap (Zero-Reload)
+func DynamicAdd(ip string, listType string) {
+	isIPv6 := utils.CheckIPType(ip) == "6"
+	setName := "RAF_" + listType // listType: "DENY" atau "ALLOW"
+	if isIPv6 { setName = "RAF_6_" + listType }
+
+	cmd := exec.Command("ipset", "-!", "add", setName, ip)
+	if err := cmd.Run(); err == nil {
+		utils.LogInfo("DYNAMIC INJECT: %s applied to Kernel Set [%s]", ip, setName)
+	}
+}
+
+// DynamicDel mencabut IP dari Kernel secara senyap
+func DynamicDel(ip string, listType string) {
+	isIPv6 := utils.CheckIPType(ip) == "6"
+	setName := "RAF_" + listType 
+	if isIPv6 { setName = "RAF_6_" + listType }
+
+	cmd := exec.Command("ipset", "-!", "del", setName, ip)
+	if err := cmd.Run(); err == nil {
+		utils.LogInfo("DYNAMIC REVOKE: %s removed from Kernel Set [%s]", ip, setName)
+	}
+}
+
+// (Fungsi DynamicBan & DynamicUnban lama yang dipakai LFD kita biarkan atau arahkan ke fungsi di atas)
+func DynamicBan(ip string) { DynamicAdd(ip, "DENY") }
+func DynamicUnban(ip string) { DynamicDel(ip, "DENY") }
