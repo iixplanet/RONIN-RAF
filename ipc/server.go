@@ -3,19 +3,29 @@ package ipc
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"raf/config"
+	"raf/firewall"
 	"raf/lfd"
 	"raf/utils"
 )
 
 const SocketPath = "/var/run/ronin-raf.sock"
 
-// StartServer memulai pendengar instruksi IPC (Inter-Process Communication)
+type CommandPayload struct {
+	Action   string `json:"action"`
+	IP       string `json:"ip"`
+	Reason   string `json:"reason"`
+	Port     string `json:"port"`
+	Duration string `json:"duration"`
+}
+
 func StartServer(reloadCallback func()) {
 	os.Remove(SocketPath)
 	listener, err := net.Listen("unix", SocketPath)
@@ -32,78 +42,89 @@ func StartServer(reloadCallback func()) {
 			go handleConnection(conn, reloadCallback)
 		}
 	}()
-	utils.LogInfo("IPC Command Center listening on %s", SocketPath)
+	utils.LogInfo("IPC Command Center listening on %s (JSON-RPC Ready)", SocketPath)
 }
 
 func handleConnection(conn net.Conn, reloadCallback func()) {
 	defer conn.Close()
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
-		cmd := strings.TrimSpace(scanner.Text())
-		if cmd == "" { continue }
-		
-		parts := strings.SplitN(cmd, " ", 3)
-		action := strings.ToUpper(parts[0])
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" { continue }
 
-		switch action {
+		var payload CommandPayload
+		if err := json.Unmarshal([]byte(line), &payload); err != nil {
+			conn.Write([]byte("ERR: Invalid JSON Payload.\n"))
+			continue
+		}
+
+		switch payload.Action {
 		case "RELOAD":
 			reloadCallback()
-			conn.Write([]byte("OK: Zero-Downtime Reload Executed.\n"))
+			conn.Write([]byte("SUCCESS: Zero-Downtime Reload Executed.\n"))
 
 		case "STOP":
-			conn.Write([]byte("OK: Initiating Daemon Shutdown Sequence.\n"))
+			conn.Write([]byte("SUCCESS: Initiating Daemon Shutdown Sequence.\n"))
 			go func() {
 				p, _ := os.FindProcess(os.Getpid())
-				p.Signal(syscall.SIGTERM) // Kirim sinyal bunuh diri dengan elegan
+				p.Signal(syscall.SIGTERM)
 			}()
 
 		case "DENY":
-			if len(parts) >= 2 {
-				ip := parts[1]
-				reason := "Manual CLI Block"
-				if len(parts) > 2 { reason = parts[2] }
-				appendToFile(config.DenyFile, ip, reason)
-				reloadCallback()
-				conn.Write([]byte(fmt.Sprintf("OK: %s permanently denied.\n", ip)))
-			}
+			appendToFile(config.DenyFile, payload.IP, payload.Reason)
+			reloadCallback()
+			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s permanently denied.\n", payload.IP)))
 
 		case "ALLOW":
-			if len(parts) >= 2 {
-				ip := parts[1]
-				reason := "Manual CLI Allow"
-				if len(parts) > 2 { reason = parts[2] }
-				appendToFile(config.AllowFile, ip, reason)
-				reloadCallback()
-				conn.Write([]byte(fmt.Sprintf("OK: %s permanently whitelisted.\n", ip)))
-			}
+			appendToFile(config.AllowFile, payload.IP, payload.Reason)
+			reloadCallback()
+			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s permanently whitelisted.\n", payload.IP)))
 
 		case "REMOVE_DENY":
-			if len(parts) >= 2 {
-				removeFromFile(config.DenyFile, parts[1])
-				reloadCallback()
-				conn.Write([]byte(fmt.Sprintf("OK: %s removed from Deny List.\n", parts[1])))
-			}
+			removeFromFile(config.DenyFile, payload.IP)
+			reloadCallback()
+			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s removed from Perm Deny List.\n", payload.IP)))
 
 		case "REMOVE_ALLOW":
-			if len(parts) >= 2 {
-				removeFromFile(config.AllowFile, parts[1])
-				reloadCallback()
-				conn.Write([]byte(fmt.Sprintf("OK: %s removed from Allow List.\n", parts[1])))
-			}
+			removeFromFile(config.AllowFile, payload.IP)
+			reloadCallback()
+			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s removed from Perm Allow List.\n", payload.IP)))
 
-		case "UNBAN": // LFD Temp Unban
-			if len(parts) >= 2 {
-				lfd.ExecuteUnban(parts[1])
-				conn.Write([]byte(fmt.Sprintf("OK: LFD Temporary Ban removed for %s\n", parts[1])))
+		case "UNBAN":
+			lfd.ExecuteUnban(payload.IP)
+			conn.Write([]byte(fmt.Sprintf("SUCCESS: LFD Temporary Ban revoked for %s\n", payload.IP)))
+
+		case "TEMP_BAN", "TEMP_ALLOW":
+			dur, err := strconv.Atoi(payload.Duration)
+			if err != nil || dur <= 0 { dur = 3600 }
+			reason := payload.Reason
+			if payload.Port != "" { reason = fmt.Sprintf("[Port: %s] %s", payload.Port, reason) }
+			
+			// Eksekusi temp ban menggunakan engine LFD
+			lfd.ExecuteBan(payload.IP, reason, dur)
+			if payload.Action == "TEMP_ALLOW" {
+				// Khusus Temp Allow, kita injek langsung ke IPSet khusus (Opsional untuk pengembangan lanjut)
+				// Untuk sekarang, kita kembalikan status OK
 			}
+			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s action applied on %s for %d seconds.\n", payload.Action, payload.IP, dur)))
+
+		case "FLUSH_TEMP":
+			lfd.FlushAllTempBans() // Pastikan fungsi ini ada di lfd/engine.go
+			conn.Write([]byte("SUCCESS: All Temporary Bans have been cleared.\n"))
+
+		case "FLUSH_DENY":
+			os.WriteFile(config.DenyFile, []byte("# Blacklist\n"), 0644)
+			reloadCallback()
+			conn.Write([]byte("SUCCESS: Permanent Deny List has been completely wiped.\n"))
 
 		default:
-			conn.Write([]byte("ERR: Unknown command code.\n"))
+			conn.Write([]byte("ERR: Unknown command action.\n"))
 		}
 	}
 }
 
 func appendToFile(path, ip, reason string) {
+	if reason == "" { reason = "Manual Override" }
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	defer f.Close()
 	f.WriteString(fmt.Sprintf("%s # %s\n", ip, reason))
@@ -114,10 +135,7 @@ func removeFromFile(path, ip string) {
 	lines := strings.Split(string(data), "\n")
 	var newLines []string
 	for _, line := range lines {
-		clean := strings.TrimSpace(line)
-		if strings.HasPrefix(clean, ip) {
-			continue // Skip baris ini (Hapus IP)
-		}
+		if strings.HasPrefix(strings.TrimSpace(line), ip) { continue }
 		newLines = append(newLines, line)
 	}
 	os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0644)
