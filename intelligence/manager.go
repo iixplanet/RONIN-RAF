@@ -40,6 +40,11 @@ var (
 
 // InitAndParse membaca konfigurasi RAF dan menyiapkan data Intelijen sebelum Firewall di-apply
 func InitAndParse() {
+	// 1. AUTO-CREATE DIRECTORY: Pastikan folder zone selalu ada sebelum memproses apapun
+	if err := os.MkdirAll(ZoneDir, 0755); err != nil {
+		utils.LogError("Failed to create Zone Directory: %v", err)
+	}
+
 	config.CoreData.Mutex.RLock()
 	ccDeny := config.CoreData.Config["RAF_CC_DENY"]
 	ccAllow := config.CoreData.Config["RAF_CC_ALLOW"]
@@ -53,14 +58,14 @@ func InitAndParse() {
 	urlCustom := config.CoreData.Config["RAF_BL_CUSTOM"]
 	config.CoreData.Mutex.RUnlock()
 
-	// 1. Status Global Blocklist
+	// 2. Status Global Blocklist
 	BlocklistEnabled = (blEnabledStr == "1" || strings.ToLower(blEnabledStr) == "true")
 	globalInterval := 86400 // Default 24 Jam
 	if val, err := strconv.Atoi(blGlobalIntervalStr); err == nil && val > 0 {
 		globalInterval = val
 	}
 
-	// 2. Load Blocklists Data dari Dashboard Settings
+	// 3. Load Blocklists Data dari Dashboard Settings
 	ActiveBlocklists = []Blocklist{}
 	if BlocklistEnabled {
 		if urlSpamdrop != "" {
@@ -74,7 +79,7 @@ func InitAndParse() {
 		}
 	}
 
-	// 3. Parse Country Codes (GeoIP)
+	// 4. Parse Country Codes (GeoIP)
 	ActiveCCDeny = parseCC(ccDeny)
 	ActiveCCAllow = parseCC(ccAllow)
 	ActiveCCDenyPorts = parseCCPorts(ccDenyPorts)
@@ -191,7 +196,9 @@ func StartBackgroundWorkers() {
 
 // downloadZoneFile mengunduh blok IP Negara secara otomatis dari ipdeny.com
 func downloadZoneFile(cc string) error {
+	// Pastikan folder tersedia sebelum file didownload
 	os.MkdirAll(ZoneDir, 0755)
+	
 	url := fmt.Sprintf("https://www.ipdeny.com/ipblocks/data/countries/%s.zone", strings.ToLower(cc))
 	utils.LogInfo("GeoIP Intel: Downloading IP database for country [%s]...", cc)
 
@@ -228,7 +235,7 @@ func loadZonesToIpset(ccList []string) {
 			errDL := downloadZoneFile(cc)
 			if errDL != nil {
 				utils.LogError("GeoIP Intel: Failed to download zone [%s]: %v", cc, errDL)
-				continue // Lewati negara ini jika gagal didownload
+				continue // Lewati negara ini jika gagal didownload, proses negara selanjutnya
 			}
 		}
 
