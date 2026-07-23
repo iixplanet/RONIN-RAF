@@ -40,7 +40,7 @@ var (
 
 // InitAndParse membaca konfigurasi RAF dan menyiapkan data Intelijen sebelum Firewall di-apply
 func InitAndParse() {
-	// 1. AUTO-CREATE DIRECTORY: Pastikan folder zone selalu ada sebelum memproses apapun
+	// AUTO-CREATE DIRECTORY
 	if err := os.MkdirAll(ZoneDir, 0755); err != nil {
 		utils.LogError("Failed to create Zone Directory: %v", err)
 	}
@@ -58,36 +58,31 @@ func InitAndParse() {
 	urlCustom := config.CoreData.Config["RAF_BL_CUSTOM"]
 	config.CoreData.Mutex.RUnlock()
 
-	// 2. Status Global Blocklist
 	BlocklistEnabled = (blEnabledStr == "1" || strings.ToLower(blEnabledStr) == "true")
 	globalInterval := 86400 // Default 24 Jam
 	if val, err := strconv.Atoi(blGlobalIntervalStr); err == nil && val > 0 {
 		globalInterval = val
 	}
 
-	// 3. Load Blocklists Data dari Dashboard Settings
 	ActiveBlocklists = []Blocklist{}
 	if BlocklistEnabled {
-		if urlSpamdrop != "" {
-			ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "SPAMDROP", Interval: time.Duration(globalInterval) * time.Second, URL: urlSpamdrop})
-		}
-		if urlDshield != "" {
-			ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "DSHIELD", Interval: time.Duration(globalInterval) * time.Second, URL: urlDshield})
-		}
-		if urlCustom != "" {
-			ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "CUSTOM_INTEL", Interval: time.Duration(globalInterval) * time.Second, URL: urlCustom})
-		}
+		if urlSpamdrop != "" { ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "SPAMDROP", Interval: time.Duration(globalInterval) * time.Second, URL: urlSpamdrop}) }
+		if urlDshield != "" { ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "DSHIELD", Interval: time.Duration(globalInterval) * time.Second, URL: urlDshield}) }
+		if urlCustom != "" { ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "CUSTOM_INTEL", Interval: time.Duration(globalInterval) * time.Second, URL: urlCustom}) }
 	}
 
-	// 4. Parse Country Codes (GeoIP)
 	ActiveCCDeny = parseCC(ccDeny)
 	ActiveCCAllow = parseCC(ccAllow)
 	ActiveCCDenyPorts = parseCCPorts(ccDenyPorts)
 	ActiveCCAllowPorts = parseCCPorts(ccAllowPorts)
 
-	// Gabungkan semua kode negara unik agar IPSet-nya disiapkan di Kernel
 	mergeUniqueCC(&ActiveCCDeny, ActiveCCDenyPorts)
 	mergeUniqueCC(&ActiveCCAllow, ActiveCCAllowPorts)
+	
+	// Log Diagnostic agar kita tahu persis apa yang ditangkap oleh memori
+	if len(ActiveCCDeny) > 0 || len(ActiveCCAllow) > 0 {
+		utils.LogInfo("GeoIP Parser: Queued Countries for Deny=%v | Allow=%v", ActiveCCDeny, ActiveCCAllow)
+	}
 }
 
 func parseCC(raw string) []string {
@@ -129,17 +124,13 @@ func mergeUniqueCC(mainList *[]string, portList map[string]string) {
 	}
 }
 
-// GenerateIpsetCommands membuat fondasi tabel memori kernel secara instan (Atomic)
 func GenerateIpsetCommands(buffer *bytes.Buffer) {
-	// CC Deny & CC Allow membutuhkan ruang memori menengah (maxelem 200000)
 	for _, cc := range ActiveCCDeny {
 		buffer.WriteString(fmt.Sprintf("create cc_%s hash:net family inet hashsize 2048 maxelem 200000 -exist\nflush cc_%s\n", cc, cc))
 	}
 	for _, cc := range ActiveCCAllow {
 		buffer.WriteString(fmt.Sprintf("create cc_%s hash:net family inet hashsize 2048 maxelem 200000 -exist\nflush cc_%s\n", cc, cc))
 	}
-	
-	// Global Blocklists
 	if BlocklistEnabled {
 		for _, bl := range ActiveBlocklists {
 			buffer.WriteString(fmt.Sprintf("create bl_%s hash:net family inet hashsize 8192 maxelem 500000 -exist\n", bl.Name))
@@ -147,7 +138,6 @@ func GenerateIpsetCommands(buffer *bytes.Buffer) {
 	}
 }
 
-// GenerateIptablesHooks mengaitkan memori IPSet ke dalam skema Iptables
 func GenerateIptablesHooks(buffer *bytes.Buffer) {
 	if BlocklistEnabled {
 		for _, bl := range ActiveBlocklists {
@@ -174,7 +164,6 @@ func GenerateIptablesHooks(buffer *bytes.Buffer) {
 	}
 }
 
-// StartBackgroundWorkers memulai semua proses download intelligence tanpa membuat Daemon Hang
 func StartBackgroundWorkers() {
 	if len(ActiveCCDeny) > 0 { go loadZonesToIpset(ActiveCCDeny) }
 	if len(ActiveCCAllow) > 0 { go loadZonesToIpset(ActiveCCAllow) }
@@ -194,13 +183,10 @@ func StartBackgroundWorkers() {
 	}
 }
 
-// downloadZoneFile mengunduh blok IP Negara secara otomatis dari ipdeny.com
 func downloadZoneFile(cc string) error {
-	// Pastikan folder tersedia sebelum file didownload
 	os.MkdirAll(ZoneDir, 0755)
-	
 	url := fmt.Sprintf("https://www.ipdeny.com/ipblocks/data/countries/%s.zone", strings.ToLower(cc))
-	utils.LogInfo("GeoIP Intel: Downloading IP database for country [%s]...", cc)
+	utils.LogInfo("GeoIP Intel: Fetching remote database for country [%s]...", cc)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil { return err }
@@ -222,7 +208,6 @@ func downloadZoneFile(cc string) error {
 	return err
 }
 
-// loadZonesToIpset membaca file data negara, otomatis mendownload jika belum ada
 func loadZonesToIpset(ccList []string) {
 	var buffer bytes.Buffer
 	count := 0
@@ -230,12 +215,12 @@ func loadZonesToIpset(ccList []string) {
 	for _, cc := range ccList {
 		path := filepath.Join(ZoneDir, strings.ToLower(cc)+".zone")
 		
-		// AUTO-DOWNLOAD: Jika file .zone belum ada, download langsung!
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			errDL := downloadZoneFile(cc)
-			if errDL != nil {
+		// AUTO-REPAIR: Jika file belum ada ATAU ukurannya di bawah 50 bytes (rusak/kosong), PAKSA DOWNLOAD ULANG!
+		info, errStat := os.Stat(path)
+		if os.IsNotExist(errStat) || (errStat == nil && info.Size() < 50) {
+			if errDL := downloadZoneFile(cc); errDL != nil {
 				utils.LogError("GeoIP Intel: Failed to download zone [%s]: %v", cc, errDL)
-				continue // Lewati negara ini jika gagal didownload, proses negara selanjutnya
+				continue
 			}
 		}
 
@@ -264,10 +249,11 @@ func loadZonesToIpset(ccList []string) {
 		} else {
 			utils.LogError("GeoIP Intel: Failed to inject IP blocks to Kernel.")
 		}
+	} else {
+		utils.LogWarn("GeoIP Intel: Found 0 valid IPs. Database might be empty or corrupted.")
 	}
 }
 
-// downloadAndInjectBlocklist mengunduh dan menyuntikkan IP jahat (Safe Flush Mechanism)
 func downloadAndInjectBlocklist(bl Blocklist) {
 	utils.LogInfo("Global Intel: Downloading Threat Feed [%s]...", bl.Name)
 
@@ -291,11 +277,9 @@ func downloadAndInjectBlocklist(bl Blocklist) {
 	if len(ips) > 0 {
 		var buffer bytes.Buffer
 		buffer.WriteString(fmt.Sprintf("flush bl_%s\n", bl.Name)) 
-
 		for _, ip := range ips {
 			buffer.WriteString(fmt.Sprintf("add bl_%s %s -exist\n", bl.Name, ip))
 		}
-
 		cmd := exec.Command("ipset", "-!", "restore")
 		cmd.Stdin = bytes.NewReader(buffer.Bytes())
 		if err := cmd.Run(); err == nil {
