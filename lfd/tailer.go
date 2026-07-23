@@ -12,17 +12,16 @@ import (
 )
 
 var (
-	RegexSSHD        = regexp.MustCompile(`(?i)(?:Failed password for|Invalid user|Failed keyboard-interactive).*?(?:from|)\s*([\d\.]+|[a-fA-F0-9:]+)`)
+	// Anti False-Positive Regex (Strict Match)
+	RegexSSHD        = regexp.MustCompile(`(?i)(?:Failed password for|Invalid user|Connection closed by authenticating user).*?(?:from|)\s*([\d\.]+|[a-fA-F0-9:]+)`)
 	RegexFTPD        = regexp.MustCompile(`(?i)(?:pure-ftpd:.*?\(.*?@([\d\.]+|[a-fA-F0-9:]+)\) \[WARNING\] Authentication failed|proftpd\[.*?\].*?([\d\.]+|[a-fA-F0-9:]+) .*?: Incorrect password)`)
-	RegexExim        = regexp.MustCompile(`(?i)(?:authenticator failed|fixed_login).*?\[([\d\.]+|[a-fA-F0-9:]+)\]`)
-	RegexCpanel      = regexp.MustCompile(`(?i)(?:\[.*?\]\s+\w+\s+\[.*?\]\s+([\d\.]+|[a-fA-F0-9:]+).*?FAILED LOGIN|FAILED LOGIN.*?([\d\.]+|[a-fA-F0-9:]+))`)
+	RegexExim        = regexp.MustCompile(`(?i)(?:authenticator failed|auth failed).*?\[([\d\.]+|[a-fA-F0-9:]+)\]`)
+	RegexCpanel      = regexp.MustCompile(`(?i)FAILED LOGIN.*?([\d\.]+|[a-fA-F0-9:]+)`)
 	RegexDirectAdmin = regexp.MustCompile(`(?i)'([\d\.]+|[a-fA-F0-9:]+)'\s+failed login attempt`)
-	RegexModSec      = regexp.MustCompile(`(?i)ModSecurity: Access denied.*?\[client ([\d\.]+|[a-fA-F0-9:]+)\]`)
-	
-	// SINKRONISASI: Regex Panel Baru
-	RegexPlesk       = regexp.MustCompile(`(?i)plesk.*?(?:failed|incorrect).*?([\d\.]+|[a-fA-F0-9:]+)`)
+	RegexPlesk       = regexp.MustCompile(`(?i)Failed login attempt.*?from IP ([\d\.]+|[a-fA-F0-9:]+)`)
 	RegexCyberPanel  = regexp.MustCompile(`(?i)CyberPanel.*?(?:fail|invalid).*?([\d\.]+|[a-fA-F0-9:]+)`)
 	RegexAAPanel     = regexp.MustCompile(`(?i)aaPanel.*?(?:fail|invalid).*?([\d\.]+|[a-fA-F0-9:]+)`)
+	RegexModSec      = regexp.MustCompile(`(?i)ModSecurity: Access denied.*?\[client ([\d\.]+|[a-fA-F0-9:]+)\]`)
 )
 
 func parseLogLine(line, service string, maxLimit int) {
@@ -65,6 +64,14 @@ func tailFile(filePath, service string, maxLimit int) {
 	}
 }
 
+// Log Path Multi-OS Fallback Scanner
+func findLogPath(candidates []string) string {
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil { return p }
+	}
+	return candidates[0] // Fallback ke yang pertama meski blm ada
+}
+
 func StartLFDEngine() {
 	config.CoreData.Mutex.RLock()
 	lfdEnabled := config.CoreData.Config["RAF_LF_DAEMON"]
@@ -93,12 +100,9 @@ func StartLFDEngine() {
 
 		var logPath string
 		switch svc {
-		case "SSHD":
-			if _, err := os.Stat("/var/log/secure"); err == nil { logPath = "/var/log/secure" } else { logPath = "/var/log/auth.log" }
-		case "FTPD":
-			if _, err := os.Stat("/var/log/messages"); err == nil { logPath = "/var/log/messages" } else { logPath = "/var/log/syslog" }
-		case "EXIM":
-			if _, err := os.Stat("/var/log/exim_mainlog"); err == nil { logPath = "/var/log/exim_mainlog" } else { logPath = "/var/log/exim/mainlog" }
+		case "SSHD": logPath = findLogPath([]string{"/var/log/secure", "/var/log/auth.log"})
+		case "FTPD": logPath = findLogPath([]string{"/var/log/messages", "/var/log/syslog", "/var/log/proftpd/proftpd.log"})
+		case "EXIM": logPath = findLogPath([]string{"/var/log/exim_mainlog", "/var/log/exim4/mainlog", "/var/log/maillog"})
 		case "CPANEL": logPath = "/usr/local/cpanel/logs/login_log"
 		case "DIRECTADMIN": logPath = "/var/log/directadmin/login.log"
 		case "PLESK": logPath = "/var/log/plesk/panel.log"
