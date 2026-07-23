@@ -198,7 +198,7 @@ func StartLFDEngine() {
 		case "FTPD": 
 			logPath = findLogPath([]string{"/var/log/messages", "/var/log/syslog", "/var/log/proftpd/proftpd.log", "/var/log/pure-ftpd/pure-ftpd.log"})
 		case "EXIM": 
-			logPath = findLogPath([]string{"/var/log/exim_mainlog", "/var/log/exim4/mainlog", "/var/log/maillog"})
+			logPath = findLogPath([]string{"/var/log/exim_mainlog", "/var/log/exim4/mainlog", "/var/log/exim/mainlog", "/var/log/maillog"})
 		case "CPANEL": 
 			logPath = "/usr/local/cpanel/logs/login_log"
 		case "DIRECTADMIN": 
