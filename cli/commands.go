@@ -4,7 +4,7 @@ package cli
 import (
 	"fmt"
 	"net"
-	"os"
+	// "os"
 )
 
 func Execute(args []string) {
