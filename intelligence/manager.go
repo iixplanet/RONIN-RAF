@@ -34,13 +34,11 @@ var (
 	ActiveCCDenyPorts  map[string]string
 	ActiveCCAllowPorts map[string]string
 	
-	// Ultra-Precise IPv4 & CIDR Regex (Mencegah false positive)
+	// Ultra-Precise IPv4 & CIDR Regex
 	ipv4Regex = regexp.MustCompile(`\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:\/(?:[1-2]?[0-9]|3[0-2]))?\b`)
 )
 
-// InitAndParse membaca konfigurasi RAF dan menyiapkan data Intelijen sebelum Firewall di-apply
 func InitAndParse() {
-	// AUTO-CREATE DIRECTORY
 	if err := os.MkdirAll(ZoneDir, 0755); err != nil {
 		utils.LogError("Failed to create Zone Directory: %v", err)
 	}
@@ -59,7 +57,7 @@ func InitAndParse() {
 	config.CoreData.Mutex.RUnlock()
 
 	BlocklistEnabled = (blEnabledStr == "1" || strings.ToLower(blEnabledStr) == "true")
-	globalInterval := 86400 // Default 24 Jam
+	globalInterval := 86400 
 	if val, err := strconv.Atoi(blGlobalIntervalStr); err == nil && val > 0 {
 		globalInterval = val
 	}
@@ -78,11 +76,6 @@ func InitAndParse() {
 
 	mergeUniqueCC(&ActiveCCDeny, ActiveCCDenyPorts)
 	mergeUniqueCC(&ActiveCCAllow, ActiveCCAllowPorts)
-	
-	// Log Diagnostic agar kita tahu persis apa yang ditangkap oleh memori
-	if len(ActiveCCDeny) > 0 || len(ActiveCCAllow) > 0 {
-		utils.LogInfo("GeoIP Parser: Queued Countries for Deny=%v | Allow=%v", ActiveCCDeny, ActiveCCAllow)
-	}
 }
 
 func parseCC(raw string) []string {
@@ -190,14 +183,23 @@ func downloadZoneFile(cc string) error {
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil { return err }
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; RoninArmor/1.0)")
+	
+	// Gunakan User-Agent Standard Browser agar tidak diblok oleh Cloudflare/IPDeny
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 45 * time.Second}
 	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode != 200 {
-		return fmt.Errorf("failed to fetch zone. HTTP Status: %v", resp.StatusCode)
+	
+	// Perbaikan BUG FATAL: Cek error sebelum memanggil resp.StatusCode
+	if err != nil {
+		return fmt.Errorf("network connection error: %v", err)
 	}
 	defer resp.Body.Close()
+
+	// Jika status bukan 200 OK, batalkan pembuatan file
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("HTTP Blocked/Failed. Status: %d", resp.StatusCode)
+	}
 
 	path := filepath.Join(ZoneDir, strings.ToLower(cc)+".zone")
 	out, err := os.Create(path)
@@ -209,14 +211,21 @@ func downloadZoneFile(cc string) error {
 }
 
 func loadZonesToIpset(ccList []string) {
+	// Proteksi Global Panic Recovery khusus untuk thread ini
+	defer func() {
+		if r := recover(); r != nil {
+			utils.LogError("FATAL: Panic recovered in GeoIP loader: %v", r)
+		}
+	}()
+
 	var buffer bytes.Buffer
 	count := 0
 
 	for _, cc := range ccList {
 		path := filepath.Join(ZoneDir, strings.ToLower(cc)+".zone")
 		
-		// AUTO-REPAIR: Jika file belum ada ATAU ukurannya di bawah 50 bytes (rusak/kosong), PAKSA DOWNLOAD ULANG!
 		info, errStat := os.Stat(path)
+		// Eksekusi download jika file tidak ada atau ukurannya 0 byte (rusak)
 		if os.IsNotExist(errStat) || (errStat == nil && info.Size() < 50) {
 			if errDL := downloadZoneFile(cc); errDL != nil {
 				utils.LogError("GeoIP Intel: Failed to download zone [%s]: %v", cc, errDL)
@@ -255,19 +264,33 @@ func loadZonesToIpset(ccList []string) {
 }
 
 func downloadAndInjectBlocklist(bl Blocklist) {
+	// Proteksi Global Panic Recovery
+	defer func() {
+		if r := recover(); r != nil {
+			utils.LogError("FATAL: Panic recovered in Blocklist loader: %v", r)
+		}
+	}()
+
 	utils.LogInfo("Global Intel: Downloading Threat Feed [%s]...", bl.Name)
 
 	req, err := http.NewRequest("GET", bl.URL, nil)
 	if err != nil { return }
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; RoninArmor/1.0; +https://roninarmor.com)")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 
 	client := &http.Client{ Timeout: 45 * time.Second }
 	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode != 200 {
-		utils.LogWarn("Global Intel: Failed to fetch [%s] -> Retaining old IP data.", bl.Name)
+	
+	// Perbaikan BUG FATAL: Cek error sebelum memanggil resp.StatusCode
+	if err != nil {
+		utils.LogWarn("Global Intel: Network error fetching [%s]: %v", bl.Name, err)
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		utils.LogWarn("Global Intel: HTTP %d fetching [%s] -> Retaining old IP data.", resp.StatusCode, bl.Name)
+		return
+	}
 
 	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
 	if err != nil { return }
