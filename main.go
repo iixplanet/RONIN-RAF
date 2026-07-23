@@ -49,8 +49,11 @@ func main() {
 		return
 	}
 
+	// SINKRONISASI LOG: Bersihkan log setiap kali daemon direstart
+	utils.ClearLog(LogFile)
+
 	fmt.Println("======================================================")
-	fmt.Println("              RONIN AEGIS FIREWALL (RAF)              ")
+	fmt.Println(" RONIN AEGIS FIREWALL (RAF) - CORE ENGINE (FINAL)     ")
 	fmt.Println("======================================================")
 
 	utils.InitLogger(LogFile)
