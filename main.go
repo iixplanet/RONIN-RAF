@@ -4,7 +4,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
+	// "os/exec"
 	"os/signal"
 	"syscall"
 	"time"
