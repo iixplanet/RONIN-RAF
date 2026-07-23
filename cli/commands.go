@@ -2,10 +2,18 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
-	// "os"
 )
+
+type CommandPayload struct {
+	Action   string `json:"action"`
+	IP       string `json:"ip"`
+	Reason   string `json:"reason"`
+	Port     string `json:"port"`
+	Duration string `json:"duration"`
+}
 
 func Execute(args []string) {
 	if len(args) == 0 {
@@ -16,28 +24,28 @@ func Execute(args []string) {
 	cmd := args[0]
 	switch cmd {
 	case "-r", "--restart":
-		sendCommand("RELOAD")
+		sendCommand(CommandPayload{Action: "RELOAD"})
 	case "-x", "--stop":
-		sendCommand("STOP")
+		sendCommand(CommandPayload{Action: "STOP"})
 	case "-d", "--deny":
 		if len(args) < 2 { fmt.Println("Usage: raf -d <ip> [comment]"); return }
-		comment := "Manual CLI Block"
-		if len(args) > 2 { comment = args[2] }
-		sendCommand(fmt.Sprintf("DENY %s %s", args[1], comment))
+		reason := "Manual CLI Block"
+		if len(args) > 2 { reason = args[2] }
+		sendCommand(CommandPayload{Action: "DENY", IP: args[1], Reason: reason})
 	case "-dr", "--denyrm":
 		if len(args) < 2 { fmt.Println("Usage: raf -dr <ip>"); return }
-		sendCommand(fmt.Sprintf("REMOVE_DENY %s", args[1]))
+		sendCommand(CommandPayload{Action: "REMOVE_DENY", IP: args[1]})
 	case "-a", "--allow":
 		if len(args) < 2 { fmt.Println("Usage: raf -a <ip> [comment]"); return }
-		comment := "Manual CLI Allow"
-		if len(args) > 2 { comment = args[2] }
-		sendCommand(fmt.Sprintf("ALLOW %s %s", args[1], comment))
+		reason := "Manual CLI Allow"
+		if len(args) > 2 { reason = args[2] }
+		sendCommand(CommandPayload{Action: "ALLOW", IP: args[1], Reason: reason})
 	case "-ar", "--allowrm":
 		if len(args) < 2 { fmt.Println("Usage: raf -ar <ip>"); return }
-		sendCommand(fmt.Sprintf("REMOVE_ALLOW %s", args[1]))
+		sendCommand(CommandPayload{Action: "REMOVE_ALLOW", IP: args[1]})
 	case "-tr", "--temprm":
 		if len(args) < 2 { fmt.Println("Usage: raf -tr <ip>"); return }
-		sendCommand(fmt.Sprintf("UNBAN %s", args[1]))
+		sendCommand(CommandPayload{Action: "UNBAN", IP: args[1]})
 	case "-h", "--help":
 		printHelp()
 	default:
@@ -46,7 +54,7 @@ func Execute(args []string) {
 	}
 }
 
-func sendCommand(cmdStr string) {
+func sendCommand(payload CommandPayload) {
 	conn, err := net.Dial("unix", "/var/run/ronin-raf.sock")
 	if err != nil {
 		fmt.Println("Error: RAF Daemon is not running or Socket is inaccessible.")
@@ -54,11 +62,12 @@ func sendCommand(cmdStr string) {
 	}
 	defer conn.Close()
 
-	conn.Write([]byte(cmdStr + "\n"))
+	data, _ := json.Marshal(payload)
+	conn.Write(append(data, '\n'))
 	
 	buf := make([]byte, 1024)
 	n, _ := conn.Read(buf)
-	fmt.Print(string(buf[:n])) // Print balasan dari Daemon
+	fmt.Print(string(buf[:n]))
 }
 
 func printHelp() {
