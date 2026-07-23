@@ -176,15 +176,19 @@ func StartBackgroundWorkers() {
 	}
 }
 
-// MULTI-MIRROR AUTO DOWNLOADER
+// MULTI-MIRROR AUTO DOWNLOADER (4 Lapis Keamanan)
 func downloadZoneFile(cc string) error {
 	os.MkdirAll(ZoneDir, 0755)
 	ccLower := strings.ToLower(cc)
 	
 	mirrors := []string{
-		// Mirror 1: Github CDN (Sangat Cepat & Stabil)
+		// Mirror 1: Github herrbischoff (Branch: main)
+		fmt.Sprintf("https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/main/ipv4/%s.cidr", ccLower),
+		// Mirror 2: Github herrbischoff (Branch: master - Fallback lama)
 		fmt.Sprintf("https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/%s.cidr", ccLower),
-		// Mirror 2: IPDeny (Fallback Asli)
+		// Mirror 3: Github ipverse (Cadangan Global RIR)
+		fmt.Sprintf("https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/ipv4/%s.cidr", ccLower),
+		// Mirror 4: IPDeny (Fallback Asli HTTP)
 		fmt.Sprintf("https://www.ipdeny.com/ipblocks/data/countries/%s.zone", ccLower),
 	}
 
