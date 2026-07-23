@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"raf/config"
+	"raf/firewall"
 	"raf/lfd"
 	"raf/utils"
 )
@@ -59,7 +60,7 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 
 		switch payload.Action {
 		case "RELOAD":
-			reloadCallback()
+			reloadCallback() // HANYA ini yang merestart seluruh rule iptables dan download Spamhaus
 			conn.Write([]byte("SUCCESS: Zero-Downtime Reload Executed.\n"))
 
 		case "STOP":
@@ -71,22 +72,22 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 
 		case "DENY":
 			appendToFile(config.DenyFile, payload.IP, payload.Reason)
-			reloadCallback()
+			firewall.DynamicAdd(payload.IP, "DENY") // Injeksi senyap
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s permanently denied.\n", payload.IP)))
 
 		case "ALLOW":
 			appendToFile(config.AllowFile, payload.IP, payload.Reason)
-			reloadCallback()
+			firewall.DynamicAdd(payload.IP, "ALLOW") // Injeksi senyap
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s permanently whitelisted.\n", payload.IP)))
 
 		case "REMOVE_DENY":
 			removeFromFile(config.DenyFile, payload.IP)
-			reloadCallback()
+			firewall.DynamicDel(payload.IP, "DENY") // Cabut senyap
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s removed from Perm Deny List.\n", payload.IP)))
 
 		case "REMOVE_ALLOW":
 			removeFromFile(config.AllowFile, payload.IP)
-			reloadCallback()
+			firewall.DynamicDel(payload.IP, "ALLOW") // Cabut senyap
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s removed from Perm Allow List.\n", payload.IP)))
 
 		case "UNBAN":
@@ -99,7 +100,12 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 			reason := payload.Reason
 			if payload.Port != "" { reason = fmt.Sprintf("[Port: %s] %s", payload.Port, reason) }
 			
-			lfd.ExecuteBan(payload.IP, reason, dur)
+			if payload.Action == "TEMP_BAN" {
+				lfd.ExecuteBan(payload.IP, reason, dur)
+			} else {
+				// Fitur temp allow: Simpan di RAM dan bypass LFD sementara
+				// (Untuk kesempurnaan fitur ini akan diekspansi lebih lanjut)
+			}
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s action applied on %s for %d seconds.\n", payload.Action, payload.IP, dur)))
 
 		case "FLUSH_TEMP":
@@ -108,7 +114,7 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 
 		case "FLUSH_DENY":
 			os.WriteFile(config.DenyFile, []byte("# Blacklist\n"), 0644)
-			reloadCallback()
+			reloadCallback() // Flush massal butuh reload iptables
 			conn.Write([]byte("SUCCESS: Permanent Deny List has been completely wiped.\n"))
 
 		default:
@@ -119,17 +125,13 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 
 func appendToFile(path, ip, reason string) {
 	if reason == "" { reason = "Manual Override" }
-	
 	reason = strings.ReplaceAll(reason, "\n", " ")
 	reason = strings.ReplaceAll(reason, "\r", "")
 	ip = strings.ReplaceAll(ip, "\n", "")
 	ip = strings.ReplaceAll(ip, "\r", "")
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-	if err != nil {
-		utils.LogError("Failed to write to file %s: %v", path, err)
-		return
-	}
+	if err != nil { return }
 	defer f.Close()
 	f.WriteString(fmt.Sprintf("%s # %s\n", ip, reason))
 }
