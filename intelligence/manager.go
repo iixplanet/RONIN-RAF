@@ -34,7 +34,7 @@ var (
 	ActiveCCDenyPorts  map[string]string
 	ActiveCCAllowPorts map[string]string
 	
-	// Ultra-Precise IPv4 & CIDR Regex
+	// Ultra-Precise IPv4 & CIDR Regex (Tahan terhadap string kotor dari Github)
 	ipv4Regex = regexp.MustCompile(`\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(?:\/(?:[1-2]?[0-9]|3[0-2]))?\b`)
 )
 
@@ -176,25 +176,22 @@ func StartBackgroundWorkers() {
 	}
 }
 
-// MULTI-MIRROR AUTO DOWNLOADER (4 Lapis Keamanan)
+// MULTI-MIRROR AUTO DOWNLOADER (Menggunakan URL Valid Terbaru)
 func downloadZoneFile(cc string) error {
 	os.MkdirAll(ZoneDir, 0755)
 	ccLower := strings.ToLower(cc)
+	ccUpper := strings.ToUpper(cc)
 	
 	mirrors := []string{
-		// Mirror 1: Github herrbischoff (Branch: main)
-		fmt.Sprintf("https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/main/ipv4/%s.cidr", ccLower),
-		// Mirror 2: Github herrbischoff (Branch: master - Fallback lama)
-		fmt.Sprintf("https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/%s.cidr", ccLower),
-		// Mirror 3: Github ipverse (Cadangan Global RIR)
-		fmt.Sprintf("https://raw.githubusercontent.com/ipverse/country-ip-blocks/master/ipv4/%s.cidr", ccLower),
-		// Mirror 4: IPDeny (Fallback Asli HTTP)
+		// Mirror 1: IPVerse Github (Tercepat & Paling Update)
+		fmt.Sprintf("https://raw.githubusercontent.com/ipverse/country-ip-blocks/refs/heads/master/country/%s/ipv4-aggregated.txt", ccLower),
+		// Mirror 2: IPDeny (Sering kena Rate Limit/Timeout, jadi posisi ke-2)
 		fmt.Sprintf("https://www.ipdeny.com/ipblocks/data/countries/%s.zone", ccLower),
 	}
 
 	var lastErr error
 	for i, url := range mirrors {
-		utils.LogInfo("GeoIP Intel: Fetching Mirror %d for country [%s]...", i+1, strings.ToUpper(cc))
+		utils.LogInfo("GeoIP Intel: Fetching Mirror %d for country [%s]...", i+1, ccUpper)
 
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil { 
@@ -202,19 +199,22 @@ func downloadZoneFile(cc string) error {
 			continue 
 		}
 		
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-		client := &http.Client{Timeout: 15 * time.Second}
+		// Menyamar sebagai Browser Asli agar tidak di-blok oleh Cloudflare
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		req.Header.Set("Accept", "text/plain,text/html,*/*")
+
+		client := &http.Client{Timeout: 20 * time.Second}
 		resp, err := client.Do(req)
 		
 		if err != nil {
-			utils.LogWarn("GeoIP Intel: Mirror %d failed (Timeout/Block). Trying next mirror...", i+1)
+			utils.LogWarn("GeoIP Intel: Mirror %d network failure. Trying next...", i+1)
 			lastErr = fmt.Errorf("network error: %v", err)
 			continue
 		}
 
 		if resp.StatusCode != 200 {
 			resp.Body.Close()
-			utils.LogWarn("GeoIP Intel: Mirror %d returned HTTP %d. Trying next mirror...", i+1, resp.StatusCode)
+			utils.LogWarn("GeoIP Intel: Mirror %d returned HTTP %d. Trying next...", i+1, resp.StatusCode)
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 			continue
 		}
@@ -231,7 +231,7 @@ func downloadZoneFile(cc string) error {
 		resp.Body.Close()
 
 		if err == nil {
-			utils.LogInfo("GeoIP Intel: Successfully downloaded zone [%s] from Mirror %d", strings.ToUpper(cc), i+1)
+			utils.LogInfo("GeoIP Intel: Successfully downloaded zone [%s] from Mirror %d", ccUpper, i+1)
 			return nil 
 		}
 		lastErr = err
@@ -254,7 +254,7 @@ func loadZonesToIpset(ccList []string) {
 		path := filepath.Join(ZoneDir, strings.ToLower(cc)+".zone")
 		
 		info, errStat := os.Stat(path)
-		// Jika ukuran file kurang dari 50 bytes (rusak/kosong), download ulang
+		// Jika ukuran file kurang dari 50 bytes (rusak/kosong), paksa download ulang
 		if os.IsNotExist(errStat) || (errStat == nil && info.Size() < 50) {
 			if errDL := downloadZoneFile(cc); errDL != nil {
 				utils.LogError("GeoIP Intel: Total failure downloading zone [%s]: %v", cc, errDL)
@@ -270,8 +270,13 @@ func loadZonesToIpset(ccList []string) {
 
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
-			ip := strings.TrimSpace(scanner.Text())
-			if ipv4Regex.MatchString(ip) {
+			line := strings.TrimSpace(scanner.Text())
+			// Abaikan baris kosong atau komentar bawaan list Github (#)
+			if line == "" || strings.HasPrefix(line, "#") { continue }
+			
+			// Ambil IP murni untuk membuang teks-teks sisa header
+			ip := ipv4Regex.FindString(line)
+			if ip != "" {
 				buffer.WriteString(fmt.Sprintf("add cc_%s %s -exist\n", cc, ip))
 				count++
 			}
