@@ -179,27 +179,16 @@ func buildAndApplyRestore(isIPv6 bool) {
 		}
 	}
 
+	
 	// 6. LAYER 4 ADVANCED MITIGATIONS & SMTP EGRESS
 	AppendAdvancedMitigations(&buffer, isIPv6)
-
-	// 6. LAYER 4 ADVANCED MITIGATIONS & SMTP EGRESS
-	// 6. LAYER 4 ADVANCED MITIGATIONS & SMTP EGRESS
-	AppendAdvancedMitigations(&buffer, isIPv6)
-
-	// =========================================================
-	// 7. CSF-STYLE DEFAULT DENY (STRICT FIREWALL POLICY)
-	// =========================================================
-	// Jika paket mencapai titik paling bawah ini (artinya tidak ada di TCP_IN/UDP_IN, 
-	// bukan ESTABLISHED, dan bukan Whitelist), langsung DROP/Blokir total.
-	buffer.WriteString("-A RAF_INPUT -j DROP\n")
-	buffer.WriteString("-A RAF_OUTPUT -j DROP\n")
-	// =========================================================
 
 	buffer.WriteString("COMMIT\n")
-	
 	// ================= END IPTABLES FORMAT =================
-
 	
+
+
+
 	
 
 	// Eksekusi Command secara Atomic (Tanpa downtime / lost connection)
