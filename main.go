@@ -50,7 +50,7 @@ func main() {
 	}
 
 	fmt.Println("======================================================")
-	fmt.Println(" RONIN AEGIS FIREWALL (RAF) - CORE ENGINE (PHASE 6)   ")
+	fmt.Println("              RONIN AEGIS FIREWALL (RAF)              ")
 	fmt.Println("======================================================")
 
 	utils.InitLogger(LogFile)
@@ -83,5 +83,5 @@ func main() {
 			break
 		}
 	}
-	utils.LogInfo("Daemon Offline.")
+	utils.LogInfo("RAF Daemon Offline.")
 }
