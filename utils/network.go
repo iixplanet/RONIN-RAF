@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// GetLocalIPs mengambil semua IP (v4 & v6) dari interface network server
+
 func GetLocalIPs() []string {
 	var ips []string
 	ifaces, err := net.Interfaces()
