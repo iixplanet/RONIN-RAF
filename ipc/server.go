@@ -82,6 +82,10 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 			// Blokir Permanen
 			EnforcePermDenyLimitAndAdd(payload.IP, payload.Reason)
 			firewall.DynamicAdd(payload.IP, "DENY")
+			
+			// [TRIGGER EMAIL ALERT] Log ini WAJIB ada agar mainssl bisa mengirim email saat block manual
+			utils.LogWarn("ADMIN BAN: IP %s permanently denied via Dashboard. Reason: %s", payload.IP, payload.Reason)
+			
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s permanently denied.\n", payload.IP)))
 
 		case "ALLOW":
