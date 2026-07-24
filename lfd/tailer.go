@@ -113,15 +113,12 @@ func parseLogLine(line, service string, maxLimit int) {
 	// Blok else (untuk debug setiap baris) dihilangkan agar log tetap bersih
 }
 
-
-		
-
 // tailFile membaca log menggunakan Inotify/Polling (Event-Driven, Low CPU)
 func tailFile(filePath, service string, maxLimit int) {
 	t, err := tail.TailFile(filePath, tail.Config{
 		Follow:    true,
 		ReOpen:    true,  // Penting: Melanjutkan jika log di-rotate oleh OS (logrotate)
-		MustExist: false, // Penting: Menunggu file dibuat jika belum ada
+		MustExist: false, // Penting: Menunggu file dibuat jika belum ada / salah ketik
 		Poll:      true,  // Fallback aman untuk File System modern
 		Location:  &tail.SeekInfo{Offset: 0, Whence: os.SEEK_END},
 	})
@@ -157,7 +154,7 @@ func findLogPath(candidates []string) string {
 }
 
 // ==============================================================================
-// 5. LFD ENGINE ORCHESTRATOR
+// 5. LFD ENGINE ORCHESTRATOR & CUSTOM OVERRIDE
 // ==============================================================================
 
 func StartLFDEngine() {
@@ -175,6 +172,19 @@ func StartLFDEngine() {
 		"AAPANEL":     config.CoreData.Config["RAF_LF_AAPANEL"],
 		"MODSEC":      config.CoreData.Config["RAF_LF_MODSEC"],
 	}
+
+	// [FITUR BARU] Tarik variabel Custom Log Path dari Dashboard
+	customPaths := map[string]string{
+		"SSHD":        config.CoreData.Config["RAF_LOG_SSHD"],
+		"FTPD":        config.CoreData.Config["RAF_LOG_FTPD"],
+		"EXIM":        config.CoreData.Config["RAF_LOG_EXIM"],
+		"CPANEL":      config.CoreData.Config["RAF_LOG_CPANEL"],
+		"DIRECTADMIN": config.CoreData.Config["RAF_LOG_DIRECTADMIN"],
+		"PLESK":       config.CoreData.Config["RAF_LOG_PLESK"],
+		"CYBERPANEL":  config.CoreData.Config["RAF_LOG_CYBERPANEL"],
+		"AAPANEL":     config.CoreData.Config["RAF_LOG_AAPANEL"],
+		"MODSEC":      config.CoreData.Config["RAF_LOG_MODSEC"],
+	}
 	config.CoreData.Mutex.RUnlock()
 
 	// Jika dimatikan di config, hentikan
@@ -188,35 +198,45 @@ func StartLFDEngine() {
 	go TempBanManager()
 	go CleanupStrikes()
 
-	// Spawn Watchers
+	// Spawn Watchers untuk tiap Layanan
 	for svc, limitStr := range limits {
 		limit, err := strconv.Atoi(limitStr)
 		if err != nil || limit <= 0 { 
-			continue // Skip jika limit bernilai 0
+			continue // Skip jika limit bernilai 0 (Fitur dimatikan)
 		}
 
-		var logPath string
-		switch svc {
-		case "SSHD": 
-			logPath = findLogPath([]string{"/var/log/secure", "/var/log/auth.log"})
-		case "FTPD": 
-			logPath = findLogPath([]string{"/var/log/messages", "/var/log/syslog", "/var/log/proftpd/proftpd.log", "/var/log/pure-ftpd/pure-ftpd.log"})
-		case "EXIM": 
-			logPath = findLogPath([]string{"/var/log/exim_mainlog", "/var/log/exim4/mainlog", "/var/log/exim/mainlog", "/var/log/maillog"})
-		case "CPANEL": 
-			logPath = "/usr/local/cpanel/logs/login_log"
-		case "DIRECTADMIN": 
-			logPath = "/var/log/directadmin/login.log"
-		case "PLESK": 
-			logPath = findLogPath([]string{"/var/log/plesk/panel.log", "/var/log/sw-cp-server/error_log"})
-		case "CYBERPANEL": 
-			logPath = findLogPath([]string{"/usr/local/lsws/logs/error.log", "/home/cyberpanel/error-logs.txt"})
-		case "AAPANEL": 
-			logPath = findLogPath([]string{"/www/server/panel/logs/error.log", "/www/server/panel/logs/request/error_log"})
-		case "MODSEC": 
-			logPath = findLogPath([]string{"/var/log/modsec_audit.log", "/var/log/apache2/modsec_audit.log", "/dev/shm/modsec_audit.log", "/var/log/httpd/modsec_audit.log"})
+		// 1. Cek Prioritas Pertama: Manual Override dari Admin Dashboard
+		logPath := strings.TrimSpace(customPaths[svc])
+		
+		// 2. Cek Prioritas Kedua: Jika kosong, gunakan Intelligent Auto-Discovery
+		if logPath == "" {
+			switch svc {
+			case "SSHD": 
+				logPath = findLogPath([]string{"/var/log/secure", "/var/log/auth.log"})
+			case "FTPD": 
+				logPath = findLogPath([]string{"/var/log/messages", "/var/log/syslog", "/var/log/proftpd/proftpd.log", "/var/log/pure-ftpd/pure-ftpd.log"})
+			case "EXIM": 
+				logPath = findLogPath([]string{"/var/log/exim_mainlog", "/var/log/exim4/mainlog", "/var/log/exim/mainlog", "/var/log/maillog"})
+			case "CPANEL": 
+				logPath = "/usr/local/cpanel/logs/login_log"
+			case "DIRECTADMIN": 
+				logPath = "/var/log/directadmin/login.log"
+			case "PLESK": 
+				logPath = findLogPath([]string{"/var/log/plesk/panel.log", "/var/log/sw-cp-server/error_log"})
+			case "CYBERPANEL": 
+				logPath = findLogPath([]string{"/usr/local/lsws/logs/error.log", "/home/cyberpanel/error-logs.txt"})
+			case "AAPANEL": 
+				logPath = findLogPath([]string{"/www/server/panel/logs/error.log", "/www/server/panel/logs/request/error_log"})
+			case "MODSEC": 
+				logPath = findLogPath([]string{"/var/log/modsec_audit.log", "/var/log/apache2/modsec_audit.log", "/dev/shm/modsec_audit.log", "/var/log/httpd/modsec_audit.log"})
+			}
+		} else {
+			// Informasikan jika Admin menggunakan Custom Override
+			utils.LogInfo("LFD CONFIG: Service [%s] is using a Custom Log Path Override.", svc)
 		}
 		
-		go tailFile(logPath, svc, limit)
+		if logPath != "" {
+			go tailFile(logPath, svc, limit)
+		}
 	}
 }
