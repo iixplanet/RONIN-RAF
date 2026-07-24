@@ -11,18 +11,21 @@ import (
 
 // Definisi Konstanta File Terpusat (Diakses oleh main.go dan ipc/server.go)
 const (
-	AllowFile = "/usr/local/ronin/lib/raf/raf.allow"
-	DenyFile  = "/usr/local/ronin/lib/raf/raf.deny"
+	AllowFile  = "/usr/local/ronin/lib/raf/raf.allow"
+	DenyFile   = "/usr/local/ronin/lib/raf/raf.deny"
+	IgnoreFile = "/usr/local/ronin/lib/raf/raf.ignore" // [FITUR LFD IGNORE]
 )
 
 // RAFData adalah struktur memori utama yang menyimpan seluruh konfigurasi & IP List
 type RAFData struct {
-	Config     map[string]string
-	AllowList4 []string
-	AllowList6 []string
-	DenyList4  []string
-	DenyList6  []string
-	Mutex      sync.RWMutex
+	Config      map[string]string
+	AllowList4  []string
+	AllowList6  []string
+	DenyList4   []string
+	DenyList6   []string
+	IgnoreList4 []string // [FITUR LFD IGNORE]
+	IgnoreList6 []string // [FITUR LFD IGNORE]
+	Mutex       sync.RWMutex
 }
 
 // CoreData adalah instansiasi global yang diakses oleh seluruh package
@@ -34,6 +37,7 @@ var CoreData = RAFData{
 func loadDefaults() {
 	defaults := map[string]string{
 		"RAF_TESTING":             "0",
+		"RAF_EMAIL_NOTIFY":        "0",
 		"RAF_IPV6":                "1",
 		"RAF_TCP_IN":              "20,21,22,25,53,80,110,143,443,465,587,993,995,2082,2083,2086,2087,2095,2096,2222,7800,8090,8443,8880,5000:6000",
 		"RAF_TCP_OUT":             "20,21,22,25,53,80,110,113,443,587,993,995,2086,2087,2089,2222,2727,5000:6000",
@@ -91,9 +95,7 @@ func loadDefaults() {
 	}
 }
 
-// LoadAll mem-parsing file konfigurasi utama, raf.allow, dan raf.deny secara Thread-Safe
-
-// LoadAll mem-parsing file konfigurasi utama, raf.allow, dan raf.deny secara Thread-Safe
+// LoadAll mem-parsing file konfigurasi utama, raf.allow, raf.deny, dan raf.ignore secara Thread-Safe
 func LoadAll(configPath, allowPath, denyPath string) {
 	CoreData.Mutex.Lock()
 	defer CoreData.Mutex.Unlock()
@@ -102,7 +104,7 @@ func LoadAll(configPath, allowPath, denyPath string) {
 	CoreData.Config = make(map[string]string)
 	loadDefaults()
 
-	// [PERBAIKAN BUG DEBUG] Matikan debug secara default setiap kali reload
+	// [MODIFIKASI POINT 6] Matikan debug secara default setiap kali reload (Anti-Spam Memory)
 	utils.IsDebug = false
 
 	// 2. Timpa Defaults dengan nilai riil dari config.ronin
@@ -119,11 +121,11 @@ func LoadAll(configPath, allowPath, denyPath string) {
 				key := strings.TrimSpace(parts[0])
 				val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
 				
-				// Deteksi Parameter Debug (Hanya menyala jika explicitly '1')
+				// [MODIFIKASI POINT 6] Deteksi Parameter Debug Khusus
 				if key == "RA_full_debug" {
 					if val == "1" || strings.ToLower(val) == "true" {
 						utils.IsDebug = true
-						utils.LogInfo("Developer Debug Mode (RA_full_debug) is ENABLED.")
+						utils.LogInfo("INFO: Debug Mode is ENABLED.")
 					}
 				}
 
@@ -140,6 +142,7 @@ func LoadAll(configPath, allowPath, denyPath string) {
 	// 3. Bersihkan RAM List lama (Jika proses ini adalah Hot-Reload)
 	CoreData.AllowList4, CoreData.AllowList6 = []string{}, []string{}
 	CoreData.DenyList4, CoreData.DenyList6 = []string{}, []string{}
+	CoreData.IgnoreList4, CoreData.IgnoreList6 = []string{}, []string{} // [FITUR LFD IGNORE]
 
 	// 4. Injeksi Otomatis Anti-Lockout (IP Interface Lokal & Loopback) ke dalam AllowList
 	localIPs := utils.GetLocalIPs()
@@ -152,17 +155,20 @@ func LoadAll(configPath, allowPath, denyPath string) {
 		}
 	}
 
-	// 5. Eksekusi Parsing File Allow & Deny Manual
+	// 5. Eksekusi Parsing File Allow, Deny, dan Ignore Manual
 	parseListFile(allowPath, &CoreData.AllowList4, &CoreData.AllowList6)
 	parseListFile(denyPath, &CoreData.DenyList4, &CoreData.DenyList6)
+	parseListFile(IgnoreFile, &CoreData.IgnoreList4, &CoreData.IgnoreList6) // [FITUR LFD IGNORE]
 }
-	
 
 // parseListFile membaca list IP dan mengkategorikannya ke IPv4 atau IPv6 secara aman
 func parseListFile(path string, list4, list6 *[]string) {
 	file, err := os.Open(path)
 	if err != nil {
-		utils.LogWarn("File list not found or inaccessible: %s", path)
+		// Pengecualian warning untuk Ignore file jika baru diinstal dan belum ada file dummy
+		if path != IgnoreFile {
+			utils.LogWarn("File list not found or inaccessible: %s", path)
+		}
 		return
 	}
 	defer file.Close()
