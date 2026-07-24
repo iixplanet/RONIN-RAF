@@ -66,7 +66,7 @@ func InitAndParse() {
 	if BlocklistEnabled {
 		if urlSpamdrop != "" { ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "SPAMDROP", Interval: time.Duration(globalInterval) * time.Second, URL: urlSpamdrop}) }
 		if urlDshield != "" { ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "DSHIELD", Interval: time.Duration(globalInterval) * time.Second, URL: urlDshield}) }
-		if urlCustom != "" { ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "CUSTOM_INTEL", Interval: time.Duration(globalInterval) * time.Second, URL: urlCustom}) }
+		if urlCustom != "" { ActiveBlocklists = append(ActiveBlocklists, Blocklist{Name: "CUSTOM_FEED", Interval: time.Duration(globalInterval) * time.Second, URL: urlCustom}) }
 	}
 
 	ActiveCCDeny = parseCC(ccDeny)
@@ -126,7 +126,8 @@ func GenerateIpsetCommands(buffer *bytes.Buffer) {
 	}
 	if BlocklistEnabled {
 		for _, bl := range ActiveBlocklists {
-			buffer.WriteString(fmt.Sprintf("create bl_%s hash:net family inet hashsize 8192 maxelem 500000 -exist\n", bl.Name))
+			// Prefix diubah menjadi RAF_bl_ untuk menghindari bentrok dengan csf
+			buffer.WriteString(fmt.Sprintf("create RAF_bl_%s hash:net family inet hashsize 8192 maxelem 500000 -exist\n", bl.Name))
 		}
 	}
 }
@@ -134,7 +135,8 @@ func GenerateIpsetCommands(buffer *bytes.Buffer) {
 func GenerateIptablesHooks(buffer *bytes.Buffer) {
 	if BlocklistEnabled {
 		for _, bl := range ActiveBlocklists {
-			buffer.WriteString(fmt.Sprintf("-A RAF_INPUT -m set --match-set bl_%s src -j DROP\n", bl.Name))
+			// Match set juga diperbarui menjadi RAF_bl_
+			buffer.WriteString(fmt.Sprintf("-A RAF_INPUT -m set --match-set RAF_bl_%s src -j DROP\n", bl.Name))
 		}
 	}
 
@@ -164,15 +166,15 @@ func StartBackgroundWorkers() {
 	if BlocklistEnabled {
 		for _, bl := range ActiveBlocklists {
 			go func(b Blocklist) {
-				downloadAndInjectBlocklist(b)
+				downloadAndApplyBlocklist(b)
 				for {
 					time.Sleep(b.Interval)
-					downloadAndInjectBlocklist(b)
+					downloadAndApplyBlocklist(b)
 				}
 			}(bl)
 		}
 	} else {
-		utils.LogInfo("Global Intel: Threat Feed auto-update is currently Disabled in config.")
+		utils.LogInfo("RAF Threat Intelligence: External feed auto-update is currently disabled in configuration.")
 	}
 }
 
@@ -191,7 +193,7 @@ func downloadZoneFile(cc string) error {
 
 	var lastErr error
 	for i, url := range mirrors {
-		utils.LogInfo("GeoIP Intel: Fetching Mirror %d for country [%s]...", i+1, ccUpper)
+		utils.LogInfo("RAF GeoIP: Fetching Mirror %d for country [%s]...", i+1, ccUpper)
 
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil { 
@@ -207,14 +209,14 @@ func downloadZoneFile(cc string) error {
 		resp, err := client.Do(req)
 		
 		if err != nil {
-			utils.LogWarn("GeoIP Intel: Mirror %d network failure. Trying next...", i+1)
+			utils.LogWarn("RAF GeoIP: Mirror %d network failure. Trying next...", i+1)
 			lastErr = fmt.Errorf("network error: %v", err)
 			continue
 		}
 
 		if resp.StatusCode != 200 {
 			resp.Body.Close()
-			utils.LogWarn("GeoIP Intel: Mirror %d returned HTTP %d. Trying next...", i+1, resp.StatusCode)
+			utils.LogWarn("RAF GeoIP: Mirror %d returned HTTP %d. Trying next...", i+1, resp.StatusCode)
 			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
 			continue
 		}
@@ -231,7 +233,7 @@ func downloadZoneFile(cc string) error {
 		resp.Body.Close()
 
 		if err == nil {
-			utils.LogInfo("GeoIP Intel: Successfully downloaded zone [%s] from Mirror %d", ccUpper, i+1)
+			utils.LogInfo("RAF GeoIP: Successfully downloaded zone [%s] from Mirror %d", ccUpper, i+1)
 			return nil 
 		}
 		lastErr = err
@@ -243,7 +245,7 @@ func downloadZoneFile(cc string) error {
 func loadZonesToIpset(ccList []string) {
 	defer func() {
 		if r := recover(); r != nil {
-			utils.LogError("FATAL: Panic recovered in GeoIP loader: %v", r)
+			utils.LogError("FATAL: Panic recovered in RAF GeoIP loader: %v", r)
 		}
 	}()
 
@@ -257,14 +259,14 @@ func loadZonesToIpset(ccList []string) {
 		// Jika ukuran file kurang dari 50 bytes (rusak/kosong), paksa download ulang
 		if os.IsNotExist(errStat) || (errStat == nil && info.Size() < 50) {
 			if errDL := downloadZoneFile(cc); errDL != nil {
-				utils.LogError("GeoIP Intel: Total failure downloading zone [%s]: %v", cc, errDL)
+				utils.LogError("RAF GeoIP: Total failure downloading zone [%s]: %v", cc, errDL)
 				continue
 			}
 		}
 
 		file, err := os.Open(path)
 		if err != nil {
-			utils.LogWarn("GeoIP Zone file is unreadable: %s", path)
+			utils.LogWarn("RAF GeoIP: Zone file is unreadable: %s", path)
 			continue
 		}
 
@@ -288,23 +290,23 @@ func loadZonesToIpset(ccList []string) {
 		cmd := exec.Command("ipset", "-!", "restore")
 		cmd.Stdin = bytes.NewReader(buffer.Bytes())
 		if err := cmd.Run(); err == nil {
-			utils.LogInfo("GeoIP: Successfully loaded %d Country IP blocks into the firewall engine.", count)
+			utils.LogInfo("RAF GeoIP: Successfully loaded %d Country IP blocks into the firewall engine.", count)
 		} else {
-			utils.LogError("GeoIP: Failed to apply IP blocks to the firewall engine.")
+			utils.LogError("RAF GeoIP: Failed to apply IP blocks to the firewall engine.")
 		}
 	} else {
-		utils.LogWarn("GeoIP: Found 0 valid IPs. Database might be empty or corrupted.")
+		utils.LogWarn("RAF GeoIP: Found 0 valid IPs. Database might be empty or corrupted.")
 	}
 }
 
-func downloadAndInjectBlocklist(bl Blocklist) {
+func downloadAndApplyBlocklist(bl Blocklist) {
 	defer func() {
 		if r := recover(); r != nil {
-			utils.LogError("FATAL: Panic recovered in Blocklist loader: %v", r)
+			utils.LogError("FATAL: Panic recovered in RAF Threat Feed loader: %v", r)
 		}
 	}()
 
-	utils.LogInfo("Global Intel: Downloading Threat Feed [%s]...", bl.Name)
+	utils.LogInfo("RAF Threat Feed: Fetching external list [%s]...", bl.Name)
 
 	req, err := http.NewRequest("GET", bl.URL, nil)
 	if err != nil { return }
@@ -314,13 +316,13 @@ func downloadAndInjectBlocklist(bl Blocklist) {
 	resp, err := client.Do(req)
 	
 	if err != nil {
-		utils.LogWarn("Global Intel: Network error fetching [%s]: %v", bl.Name, err)
+		utils.LogWarn("RAF Threat Feed: Network error fetching [%s]: %v", bl.Name, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		utils.LogWarn("Global Intel: HTTP %d fetching [%s] -> Retaining old IP data.", resp.StatusCode, bl.Name)
+		utils.LogWarn("RAF Threat Feed: HTTP %d fetching [%s] -> Retaining existing IP data.", resp.StatusCode, bl.Name)
 		return
 	}
 
@@ -331,18 +333,18 @@ func downloadAndInjectBlocklist(bl Blocklist) {
 
 	if len(ips) > 0 {
 		var buffer bytes.Buffer
-		buffer.WriteString(fmt.Sprintf("flush bl_%s\n", bl.Name)) 
+		buffer.WriteString(fmt.Sprintf("flush RAF_bl_%s\n", bl.Name)) 
 		for _, ip := range ips {
-			buffer.WriteString(fmt.Sprintf("add bl_%s %s -exist\n", bl.Name, ip))
+			buffer.WriteString(fmt.Sprintf("add RAF_bl_%s %s -exist\n", bl.Name, ip))
 		}
 		cmd := exec.Command("ipset", "-!", "restore")
 		cmd.Stdin = bytes.NewReader(buffer.Bytes())
 		if err := cmd.Run(); err == nil {
-			utils.LogInfo("Global Intel: Feed [%s] updated! Loaded %d Malicious IPs.", bl.Name, len(ips))
+			utils.LogInfo("RAF Threat Feed: List [%s] updated! Applied %d malicious IPs to kernel sets.", bl.Name, len(ips))
 		} else {
-			utils.LogError("Global Intel: Failed to inject [%s] to IPSet.", bl.Name)
+			utils.LogError("RAF Threat Feed: Failed to apply list [%s] to kernel IP sets.", bl.Name)
 		}
 	} else {
-		utils.LogWarn("Global Intel: Feed [%s] returned 0 valid IPs.", bl.Name)
+		utils.LogWarn("RAF Threat Feed: List [%s] returned 0 valid IPs.", bl.Name)
 	}
 }
