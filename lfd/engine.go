@@ -16,6 +16,7 @@ import (
 )
 
 const TempBanFile = "/usr/local/ronin/lib/raf/raf.tempban"
+const TempAllowFile = "/usr/local/ronin/lib/raf/raf.tempallow"
 
 // StrikeRecord menyimpan rekam jejak gagal login (Auth Failures)
 type StrikeRecord struct {
@@ -29,10 +30,16 @@ type TempBanRecord struct {
 	ExpiresAt time.Time
 	Reason    string
 }
+type TempAllowRecord struct {
+	IP        string
+	ExpiresAt time.Time
+	Reason    string
+}
 
 var (
 	StrikeMap      = make(map[string]map[string]*StrikeRecord) // Memori ancaman real-time
 	TempBans       = make(map[string]*TempBanRecord)           // Memori hukuman sementara
+	TempAllows     = make(map[string]*TempAllowRecord)
 	TempBanHistory = make(map[string]int)                      // Mencatat berapa kali IP masuk Temp Ban
 	EngineMutex    sync.Mutex                                  // Thread-safe lock
 )
@@ -419,3 +426,119 @@ func CleanupStrikes() {
 		}
 	}
 }
+
+// ==============================================================================
+// TEMPORARY ALLOW ENGINE (BYPASS SEMENTARA)
+// ==============================================================================
+
+// InitTempAllows membaca state bypass sementara dari disk saat RAF direstart
+func InitTempAllows() {
+	file, err := os.Open(TempAllowFile)
+	if err != nil { return }
+	defer file.Close()
+
+	now := time.Now()
+	scanner := bufio.NewScanner(file)
+	
+	EngineMutex.Lock()
+	defer EngineMutex.Unlock()
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" { continue }
+		
+		parts := strings.SplitN(line, "|", 3)
+		if len(parts) == 3 {
+			ip := parts[0]
+			var expInt int64
+			fmt.Sscanf(parts[1], "%d", &expInt)
+			expTime := time.Unix(expInt, 0)
+			
+			if expTime.After(now) {
+				TempAllows[ip] = &TempAllowRecord{ IP: ip, ExpiresAt: expTime, Reason: parts[2] }
+				go firewall.DynamicAdd(ip, "ALLOW") // Suntik ulang ke kernel
+			}
+		}
+	}
+}
+
+// SaveTempAllows menyimpan data Temp Allow ke disk (Crash Recovery)
+func SaveTempAllows() {
+	EngineMutex.Lock()
+	defer EngineMutex.Unlock()
+	
+	file, err := os.OpenFile(TempAllowFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil { return }
+	defer file.Close()
+	
+	for _, record := range TempAllows {
+		file.WriteString(fmt.Sprintf("%s|%d|%s\n", record.IP, record.ExpiresAt.Unix(), record.Reason))
+	}
+}
+
+// ExecuteTempAllow menyuntikkan bypass IP sementara
+func ExecuteTempAllow(ip, reason string, durationSeconds int) {
+	EngineMutex.Lock()
+	TempAllows[ip] = &TempAllowRecord{
+		IP:        ip,
+		ExpiresAt: time.Now().Add(time.Duration(durationSeconds) * time.Second),
+		Reason:    reason,
+	}
+	EngineMutex.Unlock()
+
+	SaveTempAllows()
+	go firewall.DynamicAdd(ip, "ALLOW")
+	utils.LogInfo("ADMIN ACTION: Temporary Bypass granted for %s (%d secs). Reason: %s", ip, durationSeconds, reason)
+}
+
+// ExecuteTempAllowRevoke mencabut bypass IP sementara secara manual
+func ExecuteTempAllowRevoke(ip string) {
+	EngineMutex.Lock()
+	if _, exists := TempAllows[ip]; exists { delete(TempAllows, ip) }
+	EngineMutex.Unlock()
+	
+	SaveTempAllows()
+	go firewall.DynamicDel(ip, "ALLOW")
+	utils.LogInfo("ADMIN ACTION: Temporary Bypass for %s manually revoked.", ip)
+}
+
+// GetActiveTempAllows mengirimkan daftar Temp Allow untuk Dashboard Web
+func GetActiveTempAllows() []map[string]interface{} {
+	EngineMutex.Lock()
+	defer EngineMutex.Unlock()
+
+	var result []map[string]interface{}
+	for _, record := range TempAllows {
+		result = append(result, map[string]interface{}{
+			"ip":         record.IP,
+			"expires_at": record.ExpiresAt.Unix(),
+			"reason":     record.Reason,
+		})
+	}
+	if result == nil { result = []map[string]interface{}{} }
+	return result
+}
+
+// TempAllowManager Ticker background untuk mengecek Temp Allow yang kedaluwarsa
+func TempAllowManager() {
+	ticker := time.NewTicker(10 * time.Second)
+	for range ticker.C {
+		now := time.Now()
+		revoked := false
+
+		EngineMutex.Lock()
+		for ip, record := range TempAllows {
+			if now.After(record.ExpiresAt) {
+				delete(TempAllows, ip)
+				go firewall.DynamicDel(ip, "ALLOW")
+				utils.LogInfo("AUTO-EXPIRE: Temporary Bypass duration expired for %s", ip)
+				revoked = true
+			}
+		}
+		EngineMutex.Unlock()
+
+		if revoked { SaveTempAllows() }
+	}
+}
+
+
