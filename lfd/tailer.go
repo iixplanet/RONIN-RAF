@@ -214,7 +214,7 @@ func StartLFDEngine() {
 		case "AAPANEL": 
 			logPath = findLogPath([]string{"/www/server/panel/logs/error.log", "/www/server/panel/logs/request/error_log"})
 		case "MODSEC": 
-			logPath = findLogPath([]string{"/var/log/modsec_audit.log", "/var/log/apache2/modsec_audit.log", "/var/log/httpd/modsec_audit.log"})
+			logPath = findLogPath([]string{"/var/log/modsec_audit.log", "/var/log/apache2/modsec_audit.log", "/dev/shm/modsec_audit.log", "/var/log/httpd/modsec_audit.log"})
 		}
 		
 		go tailFile(logPath, svc, limit)
