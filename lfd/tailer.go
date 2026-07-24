@@ -103,12 +103,21 @@ func parseLogLine(line, service string, maxLimit int) {
 			
 			// Validasi Absolut: Pastikan ini adalah IP yang sah
 			if net.ParseIP(cleanIP) == nil {
+				// [PERBAIKAN POINT 6] Laporan Regex Salah Tangkap (Mode Debug)
+				utils.LogDebug("LFD TAILER: Ignored extracted string (Not a valid IP) -> '%s' from line: %s", cleanIP, line)
 				return // Abaikan jika ternyata teks / string sampah
 			}
+			
+			// [PERBAIKAN POINT 6] Info Debug Jika Berhasil Lolos Validasi
+			utils.LogDebug("LFD TAILER: Confirmed Strike for %s. Evaluated regex group: '%s'", service, cleanIP)
 			
 			utils.LogWarn("STRIKE ALARM: IP %s failed %s authentication.", cleanIP, service)
 			AddStrike(cleanIP, service, maxLimit)
 		}
+	} else {
+		// Logika ini berguna untuk melihat secara mendalam baris log apa saja yang masuk ke tailer 
+		// namun tidak cocok dengan regex (sangat verbose, karenanya hanya aktif saat RA_full_debug=1)
+		utils.LogDebug("LFD TAILER: Line passed without strike -> %s", line)
 	}
 }
 
