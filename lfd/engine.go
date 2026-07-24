@@ -17,7 +17,7 @@ import (
 
 const TempBanFile = "/usr/local/ronin/lib/raf/raf.tempban"
 
-// StrikeRecord menyimpan rekam jejak gagal login
+// StrikeRecord menyimpan rekam jejak gagal login (Auth Failures)
 type StrikeRecord struct {
 	Count      int
 	LastStrike time.Time
@@ -50,7 +50,7 @@ func InitTempBans() {
 	EngineMutex.Lock()
 	defer EngineMutex.Unlock()
 
-	utils.LogDebug("RAF LFD INIT: Restoring active temporary bans from disk state.")
+	utils.LogDebug("INFO: RAF LFD INIT: Restoring active temporary bans from disk state.")
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -86,7 +86,6 @@ func SaveTempBans() {
 		file.WriteString(fmt.Sprintf("%s|%d|%s\n", record.IP, record.ExpiresAt.Unix(), record.Reason))
 	}
 	
-	// [PERBAIKAN POINT 6] Laporan sinkronisasi disk
 	utils.LogDebug("RAF LFD SYNC: Saved %d active temporary bans to disk.", len(TempBans))
 }
 
@@ -120,12 +119,12 @@ func EnforceTempBanLimit() {
 		if soonest != "" {
 			delete(TempBans, soonest)
 			go firewall.DynamicDel(soonest, "DENY") // Cabut dari Kernel
-			utils.LogWarn("LIMIT PRUNE: %s removed from Temp Ban (Exceeds %d Max Limit)", soonest, limit)
+			utils.LogWarn("RAF LIMIT PRUNE: %s removed from Temp Ban (Exceeds %d Max Limit)", soonest, limit)
 		}
 	}
 }
 
-// escalateToPermBan menangani konversi hukuman sementara menjadi permanen (Mandiri anti-import loop)
+// escalateToPermBan menangani konversi hukuman sementara menjadi permanen
 func escalateToPermBan(ip, reason string) {
 	// 1. Ambil batasan limit dari konfigurasi
 	config.CoreData.Mutex.RLock()
@@ -149,7 +148,7 @@ func escalateToPermBan(ip, reason string) {
 		return
 	}
 
-	// 3. Pruning Logika FIFO & EXACT MATCH (Pencegahan Duplikasi Point 2)
+	// 3. Pruning Logika FIFO & EXACT MATCH (Pencegahan Duplikasi)
 	lines := strings.Split(string(data), "\n")
 	var ipLines []string
 	var headerLines []string
@@ -161,7 +160,7 @@ func escalateToPermBan(ip, reason string) {
 		if strings.HasPrefix(clean, "#") { 
 			headerLines = append(headerLines, line)
 		} else { 
-			// [PERBAIKAN POINT 2] Evaluasi duplikasi dengan persisi string penuh
+			// Evaluasi duplikasi dengan persisi string penuh (Exact Match)
 			parts := strings.SplitN(clean, "#", 2)
 			if strings.TrimSpace(parts[0]) == ip {
 				ipExists = true
@@ -187,7 +186,7 @@ func escalateToPermBan(ip, reason string) {
 			parts := strings.SplitN(pLine, " ", 2)
 			prunedIP := strings.TrimSpace(parts[0])
 			go firewall.DynamicDel(prunedIP, "DENY")
-			utils.LogWarn("LIMIT PRUNE: %s removed from Perm Deny (Exceeds %d Max Limit)", prunedIP, limit)
+			utils.LogWarn("RAF LIMIT PRUNE: %s removed from Perm Deny (Exceeds %d Max Limit)", prunedIP, limit)
 		}
 
 		var newContent []string
@@ -204,22 +203,30 @@ func escalateToPermBan(ip, reason string) {
 	go firewall.DynamicAdd(ip, "DENY")
 }
 
-// AddStrike mencatat gagal login, menindak jika limit tercapai, dan menaikkan hukuman jika mengulangi
+// AddStrike mencatat gagal login, menindak jika limit tercapai (Auth Failure Tracker)
 func AddStrike(ip, service string, maxLimit int) {
-	// 1. Cek Anti-Lockout (Whitelist & IP Lokal)
+	// 1. Cek Anti-Lockout (Whitelist & LFD Ignore)
 	config.CoreData.Mutex.RLock()
 	isSafe := false
+	
+	// Cek Perm Allow (Kebal Semua Aturan Firewall & LFD)
 	for _, safeIP := range config.CoreData.AllowList4 { if ip == safeIP { isSafe = true; break } }
 	for _, safeIP := range config.CoreData.AllowList6 { if ip == safeIP { isSafe = true; break } }
+	
+	// [FITUR LFD IGNORE] Cek file raf.ignore (Tetap tunduk pada firewall, tapi kebal dari LFD Blokir Gagal Login)
+	if !isSafe {
+		for _, safeIP := range config.CoreData.IgnoreList4 { if ip == safeIP { isSafe = true; break } }
+		for _, safeIP := range config.CoreData.IgnoreList6 { if ip == safeIP { isSafe = true; break } }
+	}
 	config.CoreData.Mutex.RUnlock()
 
 	if isSafe { 
-		// [PERBAIKAN POINT 6]
-		utils.LogDebug("RAF LFD BYPASS: IP %s matched whitelist. Strike dismissed.", ip)
+		// Menggunakan istilah profesional
+		utils.LogDebug("RAF LFD BYPASS: IP %s matched whitelist/ignore list. Auth failure dismissed.", ip)
 		return 
 	}
 
-	// 2. Tambahkan Poin (Strike) dalam Mode Thread-Safe
+	// 2. Tambahkan Poin (Failed Attempt) dalam Mode Thread-Safe
 	EngineMutex.Lock()
 	if StrikeMap[ip] == nil { StrikeMap[ip] = make(map[string]*StrikeRecord) }
 	if StrikeMap[ip][service] == nil { StrikeMap[ip][service] = &StrikeRecord{Count: 0, LastStrike: time.Now()} }
@@ -230,8 +237,8 @@ func AddStrike(ip, service string, maxLimit int) {
 	currentCount := record.Count
 	EngineMutex.Unlock()
 
-	// [PERBAIKAN POINT 6] Laporan status Tracker
-	utils.LogDebug("RAF LFD TRACKER: Memory recorded strike %d/%d for %s (Service: %s)", currentCount, maxLimit, ip, service)
+	// Menggunakan istilah profesional
+	utils.LogDebug("RAF LFD TRACKER: Memory recorded auth failure %d/%d for %s (Service: %s)", currentCount, maxLimit, ip, service)
 
 	// 3. Jika Limit Tercapai, Eksekusi Hukuman
 	if currentCount >= maxLimit {
@@ -251,7 +258,8 @@ func AddStrike(ip, service string, maxLimit int) {
 		histCount := TempBanHistory[ip]
 		EngineMutex.Unlock()
 
-		reason := fmt.Sprintf("%s Bruteforce Detected (%d strikes)", service, currentCount)
+		// Menggunakan istilah profesional
+		reason := fmt.Sprintf("%s Bruteforce Detected (%d failed attempts)", service, currentCount)
 
 		// 4. ESKALASI PERMANEN
 		if histCount >= trigger {
@@ -272,9 +280,38 @@ func AddStrike(ip, service string, maxLimit int) {
 		ExecuteBan(ip, reason, duration)
 		
 		EngineMutex.Lock()
-		delete(StrikeMap, ip) // Reset strike untuk service ini
+		delete(StrikeMap, ip) // Reset counter untuk service ini
 		EngineMutex.Unlock()
 	}
+}
+
+// GetActiveFailures membaca memori RAM untuk dikirimkan ke Dashboard UI (Tab Live Auth Failures)
+func GetActiveFailures() []map[string]interface{} {
+	EngineMutex.Lock()
+	defer EngineMutex.Unlock()
+
+	var result []map[string]interface{}
+	
+	for ip, services := range StrikeMap {
+		totalFailures := 0
+		// Jumlahkan total gagal login dari berbagai service (SSH, FTP, dll) untuk IP tersebut
+		for _, record := range services {
+			totalFailures += record.Count
+		}
+		
+		if totalFailures > 0 {
+			result = append(result, map[string]interface{}{
+				"ip":    ip,
+				"count": totalFailures,
+			})
+		}
+	}
+	
+	// Cegah return null JSON
+	if result == nil {
+		result = []map[string]interface{}{}
+	}
+	return result
 }
 
 // ExecuteBan menembakkan eksekusi pemblokiran sementara ke Ipset
@@ -296,7 +333,7 @@ func ExecuteBan(ip, reason string, durationSeconds int) {
 	EnforceTempBanLimit() // Lakukan pruning jika memori lewat batas
 	go firewall.DynamicAdd(ip, "DENY")
 	
-	utils.LogWarn("RAF LFD ENFORCEMENT: %s Temp Banned for %d secs. Reason: %s", ip, durationSeconds, reason)
+	utils.LogWarn("RAF LFD TEMPBLOCK: %s Temp Banned for %d secs. Reason: %s", ip, durationSeconds, reason)
 }
 
 // ExecuteUnban menghapus IP dari hukuman sementara sebelum waktunya (Atas Perintah Admin)
@@ -367,7 +404,8 @@ func CleanupStrikes() {
 				if now.Sub(record.LastStrike) > forgiveDur {
 					delete(services, svc)
 					clearedAny = true
-					utils.LogDebug("LFD MEMORY: Release ip for %s on service %s (Time elapsed)", ip, svc)
+					// Menggunakan istilah profesional
+					utils.LogDebug("RAF LFD MEMORY: Cleanup auth failures for %s on service %s (Time elapsed)", ip, svc)
 				}
 			}
 			// Hapus record IP utama jika semua service sudah dibersihkan
@@ -375,9 +413,9 @@ func CleanupStrikes() {
 		}
 		EngineMutex.Unlock()
 
-		// [PERBAIKAN POINT 6] Konfirmasi Cycle Cleanup
+		// Konfirmasi Cycle Cleanup
 		if clearedAny {
-			utils.LogDebug("LFD MEMORY: cleanup cycle completed.")
+			utils.LogDebug("RAF LFD MEMORY: Auth failure cleanup cycle completed.")
 		}
 	}
 }
