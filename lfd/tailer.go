@@ -65,7 +65,6 @@ func cleanExtractedIP(raw string) string {
 // ==============================================================================
 // 3. LOG PARSING ENGINE
 // ==============================================================================
-
 func parseLogLine(line, service string, maxLimit int) {
 	// Fitur Panic Recovery: Memastikan daemon tidak pernah crash jika ada serangan regex anomali
 	defer func() {
@@ -103,23 +102,19 @@ func parseLogLine(line, service string, maxLimit int) {
 			
 			// Validasi Absolut: Pastikan ini adalah IP yang sah
 			if net.ParseIP(cleanIP) == nil {
-				// [PERBAIKAN POINT 6] Laporan Regex Salah Tangkap (Mode Debug)
-				utils.LogDebug("LFD TAILER: Ignored extracted string (Not a valid IP) -> '%s' from line: %s", cleanIP, line)
-				return // Abaikan jika ternyata teks / string sampah
+				return // Abaikan jika ternyata teks / string sampah (Tidak perlu spam debug)
 			}
 			
-			// [PERBAIKAN POINT 6] Info Debug Jika Berhasil Lolos Validasi
-			utils.LogDebug("LFD TAILER: Confirmed Strike for %s. Evaluated regex group: '%s'", service, cleanIP)
-			
+			// Jika berhasil lolos, langsung eksekusi Strike (tanpa spam debug)
 			utils.LogWarn("STRIKE ALARM: IP %s failed %s authentication.", cleanIP, service)
 			AddStrike(cleanIP, service, maxLimit)
 		}
-	} else {
-		// Logika ini berguna untuk melihat secara mendalam baris log apa saja yang masuk ke tailer 
-		// namun tidak cocok dengan regex (sangat verbose, karenanya hanya aktif saat RA_full_debug=1)
-		utils.LogDebug("LFD TAILER: Line passed without strike -> %s", line)
 	}
+	// Blok else (untuk debug setiap baris) dihilangkan agar log tetap bersih
 }
+
+
+		
 
 // tailFile membaca log menggunakan Inotify/Polling (Event-Driven, Low CPU)
 func tailFile(filePath, service string, maxLimit int) {
