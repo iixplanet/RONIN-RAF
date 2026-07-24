@@ -11,6 +11,9 @@ import (
 var Logger *log.Logger
 var LogFilePath string
 
+// [PERBAIKAN POINT 6] Variabel global penanda Debug Mode
+var IsDebug bool
+
 // ClearLog mengosongkan isi file log (truncate)
 func ClearLog(path string) {
 	os.WriteFile(path, []byte(""), 0644)
@@ -30,7 +33,6 @@ func InitLogger(logFile string) {
 	LogFilePath = logFile
 	os.MkdirAll(filepath.Dir(logFile), 0755)
 	
-	// Bersihkan log setiap kali daemon di-restart dari nol
 	ClearLog(logFile)
 	
 	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -57,4 +59,18 @@ func LogError(format string, v ...interface{}) {
 	msg := fmt.Sprintf(format, v...)
 	fmt.Println("\033[1;31m[ERROR]\033[0m", msg)
 	if Logger != nil { CheckLogSize(); Logger.Println("ERROR:", msg) }
+}
+
+// [PERBAIKAN POINT 6] Fungsi LogDebug akan merekam log sedetail mungkin jika opsi dihidupkan
+func LogDebug(format string, v ...interface{}) {
+	if !IsDebug {
+		return // Abaikan jika mode debug mati
+	}
+	msg := fmt.Sprintf(format, v...)
+	// Gunakan warna Cyan untuk Debug di terminal
+	fmt.Println("\033[1;36m[DEBUG]\033[0m", msg)
+	if Logger != nil { 
+		CheckLogSize() 
+		Logger.Println("DEBUG:", msg) 
+	}
 }
