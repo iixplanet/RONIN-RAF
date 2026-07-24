@@ -34,7 +34,7 @@ var (
 	StrikeMap      = make(map[string]map[string]*StrikeRecord) // Memori ancaman real-time
 	TempBans       = make(map[string]*TempBanRecord)           // Memori hukuman sementara
 	TempBanHistory = make(map[string]int)                      // Mencatat berapa kali IP masuk Temp Ban
-	EngineMutex    sync.Mutex
+	EngineMutex    sync.Mutex                                  // Thread-safe lock
 )
 
 // InitTempBans membaca hukuman sementara yang belum expired dari disk saat RAF di-restart
@@ -49,6 +49,8 @@ func InitTempBans() {
 	
 	EngineMutex.Lock()
 	defer EngineMutex.Unlock()
+
+	utils.LogDebug("RAF LFD INIT: Restoring active temporary bans from disk state.")
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -83,6 +85,9 @@ func SaveTempBans() {
 	for _, record := range TempBans {
 		file.WriteString(fmt.Sprintf("%s|%d|%s\n", record.IP, record.ExpiresAt.Unix(), record.Reason))
 	}
+	
+	// [PERBAIKAN POINT 6] Laporan sinkronisasi disk
+	utils.LogDebug("RAF LFD SYNC: Saved %d active temporary bans to disk.", len(TempBans))
 }
 
 // EnforceTempBanLimit memastikan RAM tidak penuh. Jika mencapai batas, IP paling cepat expired akan dibuang.
@@ -144,10 +149,11 @@ func escalateToPermBan(ip, reason string) {
 		return
 	}
 
-	// 3. Pruning Logika FIFO (Membuang IP Paling Lama jika Over Limit)
+	// 3. Pruning Logika FIFO & EXACT MATCH (Pencegahan Duplikasi Point 2)
 	lines := strings.Split(string(data), "\n")
 	var ipLines []string
 	var headerLines []string
+	ipExists := false
 
 	for _, line := range lines {
 		clean := strings.TrimSpace(line)
@@ -155,10 +161,22 @@ func escalateToPermBan(ip, reason string) {
 		if strings.HasPrefix(clean, "#") { 
 			headerLines = append(headerLines, line)
 		} else { 
+			// [PERBAIKAN POINT 2] Evaluasi duplikasi dengan persisi string penuh
+			parts := strings.SplitN(clean, "#", 2)
+			if strings.TrimSpace(parts[0]) == ip {
+				ipExists = true
+			}
 			ipLines = append(ipLines, line) 
 		}
 	}
 
+	// Jika IP sudah ada di daftar permanen, hentikan proses tulis file ganda
+	if ipExists {
+		utils.LogDebug("RAF LFD ESCALATION: IP %s already exists in Perm Deny List. Skipped duplication.", ip)
+		return
+	}
+
+	// Buang IP terlama jika melebihi batas (Pruning)
 	if len(ipLines) >= limit {
 		diff := (len(ipLines) - limit) + 1
 		pruned := ipLines[:diff]
@@ -195,9 +213,13 @@ func AddStrike(ip, service string, maxLimit int) {
 	for _, safeIP := range config.CoreData.AllowList6 { if ip == safeIP { isSafe = true; break } }
 	config.CoreData.Mutex.RUnlock()
 
-	if isSafe { return }
+	if isSafe { 
+		// [PERBAIKAN POINT 6]
+		utils.LogDebug("RAF LFD BYPASS: IP %s matched whitelist. Strike dismissed.", ip)
+		return 
+	}
 
-	// 2. Tambahkan Poin (Strike)
+	// 2. Tambahkan Poin (Strike) dalam Mode Thread-Safe
 	EngineMutex.Lock()
 	if StrikeMap[ip] == nil { StrikeMap[ip] = make(map[string]*StrikeRecord) }
 	if StrikeMap[ip][service] == nil { StrikeMap[ip][service] = &StrikeRecord{Count: 0, LastStrike: time.Now()} }
@@ -207,6 +229,9 @@ func AddStrike(ip, service string, maxLimit int) {
 	record.LastStrike = time.Now()
 	currentCount := record.Count
 	EngineMutex.Unlock()
+
+	// [PERBAIKAN POINT 6] Laporan status Tracker
+	utils.LogDebug("RAF LFD TRACKER: Memory recorded strike %d/%d for %s (Service: %s)", currentCount, maxLimit, ip, service)
 
 	// 3. Jika Limit Tercapai, Eksekusi Hukuman
 	if currentCount >= maxLimit {
@@ -230,9 +255,9 @@ func AddStrike(ip, service string, maxLimit int) {
 
 		// 4. ESKALASI PERMANEN
 		if histCount >= trigger {
-			utils.LogWarn("LFD ESCALATION: %s hit Temp Ban %d times. Converted to Permanent Ban.", ip, histCount)
+			utils.LogWarn("RAF LFD ESCALATION: %s hit Temp Ban %d times. Converted to Permanent Ban.", ip, histCount)
 			
-			escalateToPermBan(ip, "LFD Escalation: Repeat Offender ("+service+")")
+			escalateToPermBan(ip, "RAF LFD Escalation: Repeat Offender ("+service+")")
 			
 			// Bersihkan dari cache memori agar tidak bentrok
 			EngineMutex.Lock()
@@ -271,7 +296,7 @@ func ExecuteBan(ip, reason string, durationSeconds int) {
 	EnforceTempBanLimit() // Lakukan pruning jika memori lewat batas
 	go firewall.DynamicAdd(ip, "DENY")
 	
-	utils.LogWarn("LFD ENFORCEMENT: %s Temp Banned for %d secs. Reason: %s", ip, durationSeconds, reason)
+	utils.LogWarn("RAF LFD ENFORCEMENT: %s Temp Banned for %d secs. Reason: %s", ip, durationSeconds, reason)
 }
 
 // ExecuteUnban menghapus IP dari hukuman sementara sebelum waktunya (Atas Perintah Admin)
@@ -282,7 +307,7 @@ func ExecuteUnban(ip string) {
 	
 	SaveTempBans()
 	go firewall.DynamicDel(ip, "DENY")
-	utils.LogInfo("LFD MANUAL UNBAN: %s removed by Administrator.", ip)
+	utils.LogInfo("RAF LFD MANUAL UNBAN: %s removed by Administrator.", ip)
 }
 
 // FlushAllTempBans menyapu bersih seluruh IP dari daftar Temp Ban
@@ -295,7 +320,7 @@ func FlushAllTempBans() {
 	EngineMutex.Unlock()
 	
 	SaveTempBans()
-	utils.LogWarn("ADMIN ACTION: All LFD Temporary Bans have been flushed successfully.")
+	utils.LogWarn("ADMIN ACTION: All RAF LFD Temporary Bans have been flushed successfully.")
 }
 
 // TempBanManager Ticker yang berjalan di background mengecek IP expired
@@ -310,7 +335,7 @@ func TempBanManager() {
 			if now.After(record.ExpiresAt) {
 				delete(TempBans, ip)
 				go firewall.DynamicDel(ip, "DENY")
-				utils.LogInfo("LFD AUTO-UNBAN: Temporary ban duration expired for %s", ip)
+				utils.LogInfo("RAF LFD AUTO-UNBAN: Temporary ban duration expired for %s", ip)
 				unbanned = true
 			}
 		}
@@ -335,16 +360,24 @@ func CleanupStrikes() {
 		forgiveDur := time.Duration(interval) * time.Second
 
 		EngineMutex.Lock()
+		clearedAny := false
 		for ip, services := range StrikeMap {
 			for svc, record := range services {
 				// Jika jarak dari strike terakhir sudah melebihi RAF_LF_INTERVAL, bersihkan.
 				if now.Sub(record.LastStrike) > forgiveDur {
 					delete(services, svc)
+					clearedAny = true
+					utils.LogDebug("LFD MEMORY: Release ip for %s on service %s (Time elapsed)", ip, svc)
 				}
 			}
 			// Hapus record IP utama jika semua service sudah dibersihkan
 			if len(services) == 0 { delete(StrikeMap, ip) }
 		}
 		EngineMutex.Unlock()
+
+		// [PERBAIKAN POINT 6] Konfirmasi Cycle Cleanup
+		if clearedAny {
+			utils.LogDebug("LFD MEMORY: cleanup cycle completed.")
+		}
 	}
 }
