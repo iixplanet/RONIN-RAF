@@ -34,7 +34,7 @@ func StartServer(reloadCallback func()) {
 	os.Remove(SocketPath)
 	listener, err := net.Listen("unix", SocketPath)
 	if err != nil {
-		utils.LogError("Failed to start IPC Socket: %v", err)
+		utils.LogError("Failed to start RAF IPC Socket: %v", err)
 		return
 	}
 	
@@ -48,7 +48,7 @@ func StartServer(reloadCallback func()) {
 			go handleConnection(conn, reloadCallback)
 		}
 	}()
-	utils.LogInfo("IPC Command Center listening on %s (JSON-RPC Ready)", SocketPath)
+	utils.LogInfo("RAF IPC Command Center listening on %s (Ready)", SocketPath)
 }
 
 func handleConnection(conn net.Conn, reloadCallback func()) {
@@ -69,10 +69,10 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 		switch payload.Action {
 		case "RELOAD":
 			reloadCallback()
-			conn.Write([]byte("SUCCESS: Zero-Downtime Reload Executed.\n"))
+			conn.Write([]byte("RAF RELOAD SUCCESS: Zero-Downtime Reload Executed.\n"))
 
 		case "STOP":
-			conn.Write([]byte("SUCCESS: Initiating Daemon Shutdown Sequence.\n"))
+			conn.Write([]byte("RAF STOP SUCCESS: Initiating Daemon Shutdown Sequence.\n"))
 			go func() {
 				p, _ := os.FindProcess(os.Getpid())
 				p.Signal(syscall.SIGTERM) // Kirim sinyal shutdown elegan ke diri sendiri
@@ -90,6 +90,21 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 			firewall.DynamicAdd(payload.IP, "ALLOW")
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s permanently whitelisted.\n", payload.IP)))
 
+		case "IGNORE":
+			// LFD Bypass / Ignore Permanen (Tetap tunduk pada firewall)
+			appendToFile(config.IgnoreFile, payload.IP, payload.Reason)
+			
+			// Suntikkan ke RAM secara instan agar berlaku detik itu juga
+			config.CoreData.Mutex.Lock()
+			if utils.CheckIPType(payload.IP) == "6" {
+				config.CoreData.IgnoreList6 = append(config.CoreData.IgnoreList6, payload.IP)
+			} else {
+				config.CoreData.IgnoreList4 = append(config.CoreData.IgnoreList4, payload.IP)
+			}
+			config.CoreData.Mutex.Unlock()
+			
+			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s added to LFD Ignore List.\n", payload.IP)))
+
 		case "REMOVE_DENY":
 			removeFromFile(config.DenyFile, payload.IP)
 			firewall.DynamicDel(payload.IP, "DENY")
@@ -99,6 +114,18 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 			removeFromFile(config.AllowFile, payload.IP)
 			firewall.DynamicDel(payload.IP, "ALLOW")
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s removed from Perm Allow List.\n", payload.IP)))
+
+		case "REMOVE_IGNORE":
+			// Cabut LFD Bypass
+			removeFromFile(config.IgnoreFile, payload.IP)
+			
+			// Hapus dari RAM List
+			config.CoreData.Mutex.Lock()
+			config.CoreData.IgnoreList4 = removeIPFromSlice(config.CoreData.IgnoreList4, payload.IP)
+			config.CoreData.IgnoreList6 = removeIPFromSlice(config.CoreData.IgnoreList6, payload.IP)
+			config.CoreData.Mutex.Unlock()
+
+			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s removed from LFD Ignore List.\n", payload.IP)))
 
 		case "UNBAN":
 			lfd.ExecuteUnban(payload.IP)
@@ -131,6 +158,12 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 			reloadCallback() // Wajib reload untuk menyapu bersih ipset kernel secara massal
 			conn.Write([]byte("SUCCESS: Permanent Deny List has been completely wiped.\n"))
 
+		case "GET_STRIKES":
+			// Minta data real-time gagal login dari RAM LFD
+			failures := lfd.GetActiveFailures()
+			data, _ := json.Marshal(failures)
+			conn.Write(append(data, '\n'))
+
 		default:
 			conn.Write([]byte("ERR: Unknown command action.\n"))
 		}
@@ -140,6 +173,17 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 // ==============================================================================
 // INTERNAL HELPERS & LOGIC
 // ==============================================================================
+
+// removeIPFromSlice adalah helper internal untuk mencabut IP dari memori Slice secara presisi
+func removeIPFromSlice(slice []string, ip string) []string {
+	var result []string
+	for _, v := range slice {
+		if v != ip {
+			result = append(result, v)
+		}
+	}
+	return result
+}
 
 // applyTemporaryAllow menyuntikkan rule allow ke Kernel dan menjadwalkan pencabutannya
 func applyTemporaryAllow(ip string, durSeconds int) {
@@ -153,7 +197,7 @@ func applyTemporaryAllow(ip string, durSeconds int) {
 	utils.LogInfo("AUTO-EXPIRE: Temporary Bypass revoked for %s", ip)
 }
 
-// appendToFile menulis ke file secara aman dan MENCEGAH DUPLIKASI (Point 2 Fix)
+// appendToFile menulis ke file secara aman dan MENCEGAH DUPLIKASI (Exact Match)
 func appendToFile(path, ip, reason string) {
 	if reason == "" { reason = "Manual Administrator Override" }
 	reason = strings.ReplaceAll(reason, "\n", " ")
@@ -161,17 +205,19 @@ func appendToFile(path, ip, reason string) {
 	ip = strings.ReplaceAll(ip, "\n", "")
 	ip = strings.ReplaceAll(ip, "\r", "")
 
-	// [PERBAIKAN POINT 2] Cek Duplikasi IP agar file ALLOW tidak menumpuk
+	// Cek Duplikasi IP agar list tidak menumpuk
 	data, err := os.ReadFile(path)
 	if err == nil {
 		lines := strings.Split(string(data), "\n")
 		for _, line := range lines {
 			clean := strings.TrimSpace(line)
 			if clean == "" || strings.HasPrefix(clean, "#") { continue }
+			
+			// Exact Match Check
 			parts := strings.SplitN(clean, "#", 2)
 			existingIP := strings.TrimSpace(parts[0])
 			if existingIP == ip {
-				utils.LogInfo("Duplicate IP insertion %s blocked on %s", ip, path)
+				utils.LogDebug("SYSTEM: Duplicate IP insertion %s blocked on %s", ip, path)
 				return // Sudah ada, batalkan append
 			}
 		}
@@ -183,7 +229,7 @@ func appendToFile(path, ip, reason string) {
 	f.WriteString(fmt.Sprintf("%s # %s\n", ip, reason))
 }
 
-// removeFromFile membuang baris yang memuat IP tertentu dari sebuah file secara aman
+// removeFromFile membuang baris yang memuat IP tertentu dari sebuah file secara presisi
 func removeFromFile(path, ip string) {
 	data, err := os.ReadFile(path)
 	if err != nil { return }
@@ -193,11 +239,9 @@ func removeFromFile(path, ip string) {
 	
 	for _, line := range lines {
 		clean := strings.TrimSpace(line)
-		if clean == "" {
-			continue
-		}
+		if clean == "" { continue }
 		
-		// [PERBAIKAN POINT 2] Gunakan Exact Match agar penghapusan presisi
+		// Gunakan Exact Match agar IP yang mirip tidak ikut terhapus
 		parts := strings.SplitN(clean, "#", 2)
 		existingIP := strings.TrimSpace(parts[0])
 		if existingIP == ip { 
@@ -234,7 +278,7 @@ func EnforcePermDenyLimitAndAdd(ip, reason string) {
 	lines := strings.Split(string(data), "\n")
 	var ipLines []string
 	var headerLines []string
-	ipExists := false // Tracker Point 2
+	ipExists := false 
 
 	// Pisahkan header komentar (yang diawali # di depan baris) dan IP
 	for _, line := range lines {
@@ -243,7 +287,7 @@ func EnforcePermDenyLimitAndAdd(ip, reason string) {
 		if strings.HasPrefix(clean, "#") { 
 			headerLines = append(headerLines, line)
 		} else { 
-			// [PERBAIKAN POINT 2] Cek duplikasi dengan Exact Match
+			// Cek duplikasi dengan Exact Match
 			parts := strings.SplitN(clean, "#", 2)
 			if strings.TrimSpace(parts[0]) == ip {
 				ipExists = true
@@ -254,7 +298,7 @@ func EnforcePermDenyLimitAndAdd(ip, reason string) {
 
 	// Batalkan proses penambahan ke disk jika IP sudah terdaftar
 	if ipExists {
-		utils.LogInfo("Duplicate IP insertion %s blocked on Perm Deny List", ip)
+		utils.LogDebug("SYSTEM: Duplicate IP insertion %s blocked on Perm Deny List", ip)
 		return
 	}
 
