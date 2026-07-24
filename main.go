@@ -33,7 +33,7 @@ var testingTimer *time.Timer
 // BootSequence merangkai proses inisialisasi Konfigurasi, Intelijen, dan Firewall
 // Fungsi ini dipanggil saat Start pertama kali, dan setiap kali SIGHUP (Hot-Reload) diterima.
 func BootSequence() {
-	utils.LogInfo("Synchronizing Configuration Data...")
+	utils.LogInfo("RAF Synchronizing Configuration Data...")
 	
 	// 1. Load RAM Configuration
 	config.LoadAll(ConfigPath, config.AllowFile, config.DenyFile)
@@ -47,7 +47,7 @@ func BootSequence() {
 	// 4. Start Background Downloader (Spamhaus, DShield, dll)
 	intelligence.StartBackgroundWorkers()
 	
-	utils.LogInfo("Network Defense Layer Active.")
+	utils.LogInfo("RAF Network Defense Layer Active.")
 
 	// ==========================================================
 	// ANTI-LOCKOUT: TESTING MODE (AUTO-FLUSH TIMER)
@@ -110,12 +110,10 @@ func main() {
 	// berpotensi mematikan Daemon dashboard (Process Crash).
 	if os.Getenv("CALLER") != "ronin-ui-dashboard" {
 		fmt.Println("======================================================")
-		fmt.Println(" ERROR: RONIN-RAF DAEMON CANNOT BE STARTED FROM CLI   ")
+		fmt.Println("                RONIN AEGIS FIREWALL                  ")
 		fmt.Println("======================================================")
-		fmt.Println(" The RAF Daemon must be orchestrated by the Ronin Dashboard.")
-		fmt.Println(" CLI usage is strictly for issuing commands to the active daemon.")
-		fmt.Println(" Example usage: raf -d 1.1.1.1")
-		fmt.Println(" Type 'raf -h' or './ronin-raf-daemon -h' for help.")
+		fmt.Println(" Example usage: raf -d 1.2.3 4")
+		fmt.Println(" Type 'raf -h' for help.")
 		os.Exit(1)
 	}
 
@@ -131,13 +129,13 @@ func main() {
 
 	// D. TAMPILAN BANNER ENTERPRISE
 	fmt.Println("======================================================")
-	fmt.Println(" RONIN AEGIS FIREWALL (RAF) - CORE DAEMON ENGINE      ")
-	fmt.Println(" Enterprise Stateful Packet Inspection & LFD          ")
+	fmt.Println("             RONIN AEGIS FIREWALL (RAF)               ")
+	fmt.Println("          Stateful Packet Inspection & LFD            ")
 	fmt.Println("======================================================")
 
 	// E. INIT LOGGER & PID
 	utils.InitLogger(LogFile)
-	utils.LogInfo("Daemon Booting Sequence Initiated...")
+	utils.LogInfo("RAF Daemon Booting Sequence Initiated...")
 	writePID()
 	
 	// F. GLOBAL PANIC RECOVERY
