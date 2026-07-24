@@ -144,14 +144,26 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 			lfd.ExecuteBan(payload.IP, reason, dur)
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: Temporary Ban applied on %s for %d seconds.\n", payload.IP, dur)))
 
-		case "TEMP_ALLOW":
+        case "TEMP_ALLOW":
 			dur, err := strconv.Atoi(payload.Duration)
 			if err != nil || dur <= 0 { dur = 3600 }
+			reason := payload.Reason
+			if payload.Port != "" { reason = fmt.Sprintf("[Port: %s] %s", payload.Port, reason) }
 			
-			// RAM-Based Temporary Bypass (Otomatis tercabut setelah timer habis)
-			go applyTemporaryAllow(payload.IP, dur)
+			// Menggunakan engine LFD terbaru
+			lfd.ExecuteTempAllow(payload.IP, reason, dur)
 			conn.Write([]byte(fmt.Sprintf("SUCCESS: Temporary Allow granted on %s for %d seconds.\n", payload.IP, dur)))
 
+		case "GET_TEMP_ALLOWS":
+			// Meminta data JSON Temp Allows
+			allows := lfd.GetActiveTempAllows()
+			data, _ := json.Marshal(allows)
+			conn.Write(append(data, '\n'))
+
+		case "REMOVE_TEMP_ALLOW":
+			lfd.ExecuteTempAllowRevoke(payload.IP)
+			conn.Write([]byte(fmt.Sprintf("SUCCESS: Temporary Allow revoked for %s\n", payload.IP)))
+			
 		case "FLUSH_TEMP":
 			lfd.FlushAllTempBans()
 			conn.Write([]byte("SUCCESS: All Temporary Bans have been cleared.\n"))
@@ -189,17 +201,6 @@ func removeIPFromSlice(slice []string, ip string) []string {
 	return result
 }
 
-// applyTemporaryAllow menyuntikkan rule allow ke Kernel dan menjadwalkan pencabutannya
-func applyTemporaryAllow(ip string, durSeconds int) {
-	utils.LogInfo("ADMIN ACTION: Temporary Bypass granted for %s (%d seconds)", ip, durSeconds)
-	firewall.DynamicAdd(ip, "ALLOW")
-	
-	// Tunggu sampai waktu habis, lalu cabut
-	time.Sleep(time.Duration(durSeconds) * time.Second)
-	
-	firewall.DynamicDel(ip, "ALLOW")
-	utils.LogInfo("AUTO-EXPIRE: Temporary Bypass revoked for %s", ip)
-}
 
 // appendToFile menulis ke file secara aman dan MENCEGAH DUPLIKASI (Exact Match)
 func appendToFile(path, ip, reason string) {
