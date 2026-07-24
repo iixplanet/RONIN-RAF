@@ -92,6 +92,8 @@ func loadDefaults() {
 }
 
 // LoadAll mem-parsing file konfigurasi utama, raf.allow, dan raf.deny secara Thread-Safe
+
+// LoadAll mem-parsing file konfigurasi utama, raf.allow, dan raf.deny secara Thread-Safe
 func LoadAll(configPath, allowPath, denyPath string) {
 	CoreData.Mutex.Lock()
 	defer CoreData.Mutex.Unlock()
@@ -99,6 +101,9 @@ func LoadAll(configPath, allowPath, denyPath string) {
 	// 1. Inisialisasi peta konfigurasi dengan Defaults
 	CoreData.Config = make(map[string]string)
 	loadDefaults()
+
+	// [PERBAIKAN BUG DEBUG] Matikan debug secara default setiap kali reload
+	utils.IsDebug = false
 
 	// 2. Timpa Defaults dengan nilai riil dari config.ronin
 	file, err := os.Open(configPath)
@@ -114,13 +119,11 @@ func LoadAll(configPath, allowPath, denyPath string) {
 				key := strings.TrimSpace(parts[0])
 				val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
 				
-				// [PERBAIKAN POINT 6] Ambil Parameter Khusus Debug
+				// Deteksi Parameter Debug (Hanya menyala jika explicitly '1')
 				if key == "RA_full_debug" {
 					if val == "1" || strings.ToLower(val) == "true" {
 						utils.IsDebug = true
-						utils.LogInfo("RoninArmor Debug Mode (RA_full_debug) is currently ENABLED. Verbose logging activated.")
-					} else {
-						utils.IsDebug = false
+						utils.LogInfo("Developer Debug Mode (RA_full_debug) is ENABLED.")
 					}
 				}
 
@@ -153,6 +156,7 @@ func LoadAll(configPath, allowPath, denyPath string) {
 	parseListFile(allowPath, &CoreData.AllowList4, &CoreData.AllowList6)
 	parseListFile(denyPath, &CoreData.DenyList4, &CoreData.DenyList6)
 }
+	
 
 // parseListFile membaca list IP dan mengkategorikannya ke IPv4 atau IPv6 secara aman
 func parseListFile(path string, list4, list6 *[]string) {
