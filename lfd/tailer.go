@@ -13,29 +13,83 @@ import (
 )
 
 // ==============================================================================
-// 1. ENTERPRISE THREAT SIGNATURES (ANTI FALSE-POSITIVE & NAT AWARE)
+// 1. ENTERPRISE THREAT SIGNATURES (MULTI-REGEX DICTIONARY)
 // ==============================================================================
-var (
-	// SSHD: Mengincar kata kunci spesifik dan menangkap IP setelah kata "from"
-	RegexSSHD        = regexp.MustCompile(`(?i)(?:Failed password|Invalid user|maximum authentication attempts|Disconnecting authenticating user|preauth).*?from\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`)
-	
-	// FTPD: Pure-FTPd dan ProFTPd (Mengabaikan log jika format rusak)
-	RegexFTPD        = regexp.MustCompile(`(?i)(?:pure-ftpd:.*?\(\?@(?:::ffff:)?([a-fA-F0-9\.:]+)\).*?Authentication failed|proftpd\[.*?\].*?(?:::ffff:)?([a-fA-F0-9\.:]+)\s*(?:\[.*?\])?\s*:\s*Incorrect password)`)
-	
-	// EXIM / POSTFIX: Khusus Exim, kita memaksa Regex melompati IP Localhost di dalam kurung biasa "([ ... ])"
-	// dan langsung menembak IP yang menempel DENGAN TITIK DUA "]:", karena itu adalah letak IP Publik Asli.
-	RegexExim        = regexp.MustCompile(`(?i)(?:authenticator failed|auth failed|Authentication failed|SASL LOGIN).*?\[(?:IPv6:)?(?:::ffff:)?([a-fA-F0-9\.:]+)\]:`)
-	
-	// CONTROL PANELS
-	RegexCpanel      = regexp.MustCompile(`(?i)FAILED LOGIN.*?(?:from)?\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`)
-	RegexDirectAdmin = regexp.MustCompile(`(?i)'(?:::ffff:)?([a-fA-F0-9\.:]+)'\s+failed login attempt`)
-	RegexPlesk       = regexp.MustCompile(`(?i)(?:plesk|failed login attempt).*?from IP\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`)
-	RegexCyberPanel  = regexp.MustCompile(`(?i)(?:Login failed|Invalid login).*?(?:IP:|from)\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`)
-	RegexAAPanel     = regexp.MustCompile(`(?i)(?:fail|invalid|Failed login).*?(?:IP:|from)\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`)
-	
-	// MODSECURITY WAF: Sering kali menyertakan port "1.2.3.4:54321", kita buat capture group yang non-greedy
-	RegexModSec      = regexp.MustCompile(`(?i)ModSecurity: Access denied.*?\[client\s+(?:::ffff:)?([a-fA-F0-9\.:]+?)(?::\d+)?\]`)
-)
+// Sistem kini mengevaluasi log menggunakan array pola, memastikan akurasi 100% 
+// lintas Sistem Operasi (CentOS, Ubuntu, dll) dan berbagai Control Panel.
+
+var ThreatSignatures = map[string][]*regexp.Regexp{
+	"SSHD": {
+		// Standard Failed Password
+		regexp.MustCompile(`(?i)Failed password for .*? from\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+		// Invalid User attempt
+		regexp.MustCompile(`(?i)Invalid user .*? from\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+		// Connection closed during preauth (Common botnet scanning behavior)
+		regexp.MustCompile(`(?i)Connection closed by (?:authenticating user|invalid user) .*?\s+(?:::ffff:)?([a-fA-F0-9\.:]+)\s+\[preauth\]`),
+		// Max auth attempts exceeded
+		regexp.MustCompile(`(?i)maximum authentication attempts exceeded for .*? from\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+		// Disconnecting due to too many errors
+		regexp.MustCompile(`(?i)Disconnecting (?:authenticating user|invalid user) .*?\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+		// Bad Protocol / Nmap SSH script scan
+		regexp.MustCompile(`(?i)Bad protocol version identification.*?from\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+	},
+	"FTPD": {
+		// Pure-FTPd
+		regexp.MustCompile(`(?i)pure-ftpd:.*?\(\?@(?:::ffff:)?([a-fA-F0-9\.:]+)\).*?Authentication failed`),
+		// ProFTPd - Incorrect Password
+		regexp.MustCompile(`(?i)proftpd\[.*?\].*?(?:::ffff:)?([a-fA-F0-9\.:]+)\s*(?:\[.*?\])?\s*:\s*USER.*?Incorrect password`),
+		// ProFTPd - No such user
+		regexp.MustCompile(`(?i)proftpd\[.*?\].*?(?:::ffff:)?([a-fA-F0-9\.:]+)\s*(?:\[.*?\])?\s*:\s*USER.*?No such user found`),
+		// Vsftpd
+		regexp.MustCompile(`(?i)vsftpd:.*?(?:::ffff:)?([a-fA-F0-9\.:]+)\s+FAIL LOGIN`),
+	},
+	"EXIM": {
+		// Exim Mainlog Authenticator Failed
+		regexp.MustCompile(`(?i)exim\[.*?\].*?(?:authenticator failed|auth failed|Authentication failed).*?\[(?:IPv6:)?(?:::ffff:)?([a-fA-F0-9\.:]+)\]:`),
+		// Postfix SASL Login Failed
+		regexp.MustCompile(`(?i)postfix/smtpd\[.*?\].*?warning:.*?(?:unknown|\[)(?:::ffff:)?([a-fA-F0-9\.:]+)(?:\])?: SASL [a-zA-Z]+ authentication failed`),
+		// Dovecot Auth Failure
+		regexp.MustCompile(`(?i)dovecot: (?:auth|pop3-login|imap-login):.*?Authentication failure.*?(?:rip|IP)=(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+		// Dovecot Aborted Login
+		regexp.MustCompile(`(?i)dovecot:.*?(?:Aborted login|Disconnected).*?(?:auth failed).*?(?:rip|IP)=(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+	},
+	"CPANEL": {
+		// WHM / cPanel Main Login
+		regexp.MustCompile(`(?i)FAILED LOGIN.*?(?:from)?\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+		// Webmail Login
+		regexp.MustCompile(`(?i)webmaild\[.*?\].*?FAILED LOGIN.*?(?:from)?\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+		// CPHulkd / cPanel Bruteforce Protection Log
+		regexp.MustCompile(`(?i)cphulkd\[.*?\].*?Login Permitted.*?from\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`), // (Adjust if checking failed logs specifically)
+	},
+	"DIRECTADMIN": {
+		// DA Standard format
+		regexp.MustCompile(`(?i)'(?:::ffff:)?([a-fA-F0-9\.:]+)'\s+failed login attempt`),
+		// DA failed to login
+		regexp.MustCompile(`(?i)(?:::ffff:)?([a-fA-F0-9\.:]+)\s+failed to login`),
+		// DA Blocking log
+		regexp.MustCompile(`(?i)Blocking\s+(?:::ffff:)?([a-fA-F0-9\.:]+)\s+for\s+failed\s+login`),
+	},
+	"PLESK": {
+		// Plesk Panel Main
+		regexp.MustCompile(`(?i)(?:plesk|failed login attempt|Login failed).*?from IP\s+(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+		// SW-CP-SERVER (Nginx front-end for Plesk)
+		regexp.MustCompile(`(?i)sw-cp-server.*?(?:Failed|Invalid) login.*?(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+	},
+	"CYBERPANEL": {
+		// CyberPanel general auth failures
+		regexp.MustCompile(`(?i)(?:Login failed|Invalid login|Incorrect).*?(?:IP:|from)\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+	},
+	"AAPANEL": {
+		// aaPanel general auth failures
+		regexp.MustCompile(`(?i)(?:fail|invalid|Failed login|Login error).*?(?:IP:|from)\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`),
+	},
+	"MODSEC": {
+		// Apache / LiteSpeed Classic Error Log Format
+		regexp.MustCompile(`(?i)ModSecurity:\s+(?:Access denied|Warning|Access blocked).*?\[client\s+(?:::ffff:)?([a-fA-F0-9\.:]+?)(?::\d+)?\]`),
+		// Nginx / libmodsecurity3 JSON Audit Log Format
+		regexp.MustCompile(`(?i)"client_ip"\s*:\s*"([a-fA-F0-9\.:]+)"`),
+	},
+}
 
 // ==============================================================================
 // 2. IP SANITIZATION LAYER (MEMASTIKAN FORMAT IP 100% VALID UNTUK KERNEL)
@@ -49,7 +103,6 @@ func cleanExtractedIP(raw string) string {
 	raw = strings.TrimPrefix(raw, "IPv6:")
 	
 	// Jika formatnya adalah IPv4 yang ditempeli Port (contoh: 192.168.1.1:54321)
-	// Kita pisahkan dan ambil IP-nya saja dengan aman.
 	if strings.Contains(raw, ".") && strings.Contains(raw, ":") {
 		host, _, err := net.SplitHostPort(raw)
 		if err == nil {
@@ -65,52 +118,47 @@ func cleanExtractedIP(raw string) string {
 // ==============================================================================
 // 3. LOG PARSING ENGINE
 // ==============================================================================
+
 func parseLogLine(line, service string, maxLimit int) {
-	// Fitur Panic Recovery: Memastikan daemon tidak pernah crash jika ada serangan regex anomali
+	// Fitur Panic Recovery: Memastikan daemon tidak pernah crash jika ada serangan anomali
 	defer func() {
 		if r := recover(); r != nil {
 			utils.LogError("Recovered from panic in LFD Regex parser: %v", r)
 		}
 	}()
 
-	var match []string
-	switch service {
-	case "SSHD": match = RegexSSHD.FindStringSubmatch(line)
-	case "FTPD": match = RegexFTPD.FindStringSubmatch(line)
-	case "EXIM": match = RegexExim.FindStringSubmatch(line)
-	case "CPANEL": match = RegexCpanel.FindStringSubmatch(line)
-	case "DIRECTADMIN": match = RegexDirectAdmin.FindStringSubmatch(line)
-	case "PLESK": match = RegexPlesk.FindStringSubmatch(line)
-	case "CYBERPANEL": match = RegexCyberPanel.FindStringSubmatch(line)
-	case "AAPANEL": match = RegexAAPanel.FindStringSubmatch(line)
-	case "MODSEC": match = RegexModSec.FindStringSubmatch(line)
-	}
+	signatures, exists := ThreatSignatures[service]
+	if !exists { return } // Service tidak dikenali
 
-	if len(match) > 1 {
-		var rawIP string
-		// Ambil IP dari Capture Group pertama yang valid/terisi
-		for i := 1; i < len(match); i++ {
-			if match[i] != "" { 
-				rawIP = match[i]
-				break 
+	// Looping mengecek baris log terhadap seluruh Array Regex milik service tersebut
+	for _, regex := range signatures {
+		match := regex.FindStringSubmatch(line)
+		
+		if len(match) > 1 {
+			var rawIP string
+			// Ambil IP dari Capture Group yang valid/terisi (mengakomodasi group bersarang)
+			for i := 1; i < len(match); i++ {
+				if match[i] != "" { 
+					rawIP = match[i]
+					break 
+				}
+			}
+
+			if rawIP != "" {
+				cleanIP := cleanExtractedIP(rawIP)
+				
+				// Validasi Absolut: Pastikan ini adalah IP yang sah
+				if net.ParseIP(cleanIP) == nil {
+					continue // Regex salah tangkap string, coba regex berikutnya
+				}
+				
+				// Jika berhasil lolos, eksekusi Poin (Auth Failure) dan putuskan loop
+				utils.LogWarn("AUTH ALARM: Target %s failed %s authentication.", cleanIP, service)
+				AddStrike(cleanIP, service, maxLimit)
+				break
 			}
 		}
-
-		if rawIP != "" {
-			// Bersihkan IP dari Port dan Prefix OS
-			cleanIP := cleanExtractedIP(rawIP)
-			
-			// Validasi Absolut: Pastikan ini adalah IP yang sah
-			if net.ParseIP(cleanIP) == nil {
-				return // Abaikan jika ternyata teks / string sampah (Tidak perlu spam debug)
-			}
-			
-			// Jika berhasil lolos, langsung eksekusi Strike (tanpa spam debug)
-			utils.LogWarn("STRIKE ALARM: IP %s failed %s authentication.", cleanIP, service)
-			AddStrike(cleanIP, service, maxLimit)
-		}
 	}
-	// Blok else (untuk debug setiap baris) dihilangkan agar log tetap bersih
 }
 
 // tailFile membaca log menggunakan Inotify/Polling (Event-Driven, Low CPU)
@@ -173,7 +221,7 @@ func StartLFDEngine() {
 		"MODSEC":      config.CoreData.Config["RAF_LF_MODSEC"],
 	}
 
-	// [FITUR BARU] Tarik variabel Custom Log Path dari Dashboard
+	// Tarik variabel Custom Log Path dari Dashboard
 	customPaths := map[string]string{
 		"SSHD":        config.CoreData.Config["RAF_LOG_SSHD"],
 		"FTPD":        config.CoreData.Config["RAF_LOG_FTPD"],
@@ -214,9 +262,9 @@ func StartLFDEngine() {
 			case "SSHD": 
 				logPath = findLogPath([]string{"/var/log/secure", "/var/log/auth.log"})
 			case "FTPD": 
-				logPath = findLogPath([]string{"/var/log/messages", "/var/log/syslog", "/var/log/proftpd/proftpd.log", "/var/log/pure-ftpd/pure-ftpd.log"})
+				logPath = findLogPath([]string{"/var/log/messages", "/var/log/syslog", "/var/log/proftpd/proftpd.log", "/var/log/pure-ftpd/pure-ftpd.log", "/var/log/vsftpd.log"})
 			case "EXIM": 
-				logPath = findLogPath([]string{"/var/log/exim_mainlog", "/var/log/exim4/mainlog", "/var/log/exim/mainlog", "/var/log/maillog"})
+				logPath = findLogPath([]string{"/var/log/exim_mainlog", "/var/log/exim4/mainlog", "/var/log/exim/mainlog", "/var/log/maillog", "/var/log/mail.log"})
 			case "CPANEL": 
 				logPath = "/usr/local/cpanel/logs/login_log"
 			case "DIRECTADMIN": 
@@ -228,7 +276,7 @@ func StartLFDEngine() {
 			case "AAPANEL": 
 				logPath = findLogPath([]string{"/www/server/panel/logs/error.log", "/www/server/panel/logs/request/error_log"})
 			case "MODSEC": 
-				logPath = findLogPath([]string{"/var/log/modsec_audit.log", "/var/log/apache2/modsec_audit.log", "/dev/shm/modsec_audit.log", "/var/log/httpd/modsec_audit.log"})
+				logPath = findLogPath([]string{"/var/log/modsec_audit.log", "/var/log/apache2/modsec_audit.log", "/dev/shm/modsec_audit.log", "/var/log/httpd/modsec_audit.log", "/var/log/modsec_audit.json"})
 			}
 		} else {
 			// Informasikan jika Admin menggunakan Custom Override
