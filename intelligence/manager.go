@@ -288,12 +288,12 @@ func loadZonesToIpset(ccList []string) {
 		cmd := exec.Command("ipset", "-!", "restore")
 		cmd.Stdin = bytes.NewReader(buffer.Bytes())
 		if err := cmd.Run(); err == nil {
-			utils.LogInfo("GeoIP Intel: Successfully injected %d Country IP Blocks into memory.", count)
+			utils.LogInfo("GeoIP: Successfully loaded %d Country IP blocks into the firewall engine.", count)
 		} else {
-			utils.LogError("GeoIP Intel: Failed to inject IP blocks to Kernel.")
+			utils.LogError("GeoIP: Failed to apply IP blocks to the firewall engine.")
 		}
 	} else {
-		utils.LogWarn("GeoIP Intel: Found 0 valid IPs. Database might be empty or corrupted.")
+		utils.LogWarn("GeoIP: Found 0 valid IPs. Database might be empty or corrupted.")
 	}
 }
 
