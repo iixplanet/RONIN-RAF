@@ -153,7 +153,7 @@ func applyTemporaryAllow(ip string, durSeconds int) {
 	utils.LogInfo("AUTO-EXPIRE: Temporary Bypass revoked for %s", ip)
 }
 
-// appendToFile menulis ke file secara aman dari serangan Injection format file (\n)
+// appendToFile menulis ke file secara aman dan MENCEGAH DUPLIKASI (Point 2 Fix)
 func appendToFile(path, ip, reason string) {
 	if reason == "" { reason = "Manual Administrator Override" }
 	reason = strings.ReplaceAll(reason, "\n", " ")
@@ -161,13 +161,29 @@ func appendToFile(path, ip, reason string) {
 	ip = strings.ReplaceAll(ip, "\n", "")
 	ip = strings.ReplaceAll(ip, "\r", "")
 
+	// [PERBAIKAN POINT 2] Cek Duplikasi IP agar file ALLOW tidak menumpuk
+	data, err := os.ReadFile(path)
+	if err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			clean := strings.TrimSpace(line)
+			if clean == "" || strings.HasPrefix(clean, "#") { continue }
+			parts := strings.SplitN(clean, "#", 2)
+			existingIP := strings.TrimSpace(parts[0])
+			if existingIP == ip {
+				utils.LogInfo("Duplicate IP insertion %s blocked on %s", ip, path)
+				return // Sudah ada, batalkan append
+			}
+		}
+	}
+
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil { return }
 	defer f.Close()
 	f.WriteString(fmt.Sprintf("%s # %s\n", ip, reason))
 }
 
-// removeFromFile membuang baris yang memuat IP tertentu dari sebuah file
+// removeFromFile membuang baris yang memuat IP tertentu dari sebuah file secara aman
 func removeFromFile(path, ip string) {
 	data, err := os.ReadFile(path)
 	if err != nil { return }
@@ -177,13 +193,22 @@ func removeFromFile(path, ip string) {
 	
 	for _, line := range lines {
 		clean := strings.TrimSpace(line)
-		// Lewati baris jika IP cocok (menghapusnya dari output)
-		if strings.HasPrefix(clean, ip) { continue }
+		if clean == "" {
+			continue
+		}
+		
+		// [PERBAIKAN POINT 2] Gunakan Exact Match agar penghapusan presisi
+		parts := strings.SplitN(clean, "#", 2)
+		existingIP := strings.TrimSpace(parts[0])
+		if existingIP == ip { 
+			continue // Lewati baris ini (Dihapus)
+		}
+		
 		newLines = append(newLines, line)
 	}
 	
 	// Tulis ulang file tanpa baris yang dihapus
-	os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0644)
+	os.WriteFile(path, []byte(strings.Join(newLines, "\n")+"\n"), 0644)
 }
 
 // EnforcePermDenyLimitAndAdd menambahkan IP ke Deny File sembari memastikan tidak melebihi RAM/Limit File (Sistem FIFO)
@@ -209,6 +234,7 @@ func EnforcePermDenyLimitAndAdd(ip, reason string) {
 	lines := strings.Split(string(data), "\n")
 	var ipLines []string
 	var headerLines []string
+	ipExists := false // Tracker Point 2
 
 	// Pisahkan header komentar (yang diawali # di depan baris) dan IP
 	for _, line := range lines {
@@ -217,8 +243,19 @@ func EnforcePermDenyLimitAndAdd(ip, reason string) {
 		if strings.HasPrefix(clean, "#") { 
 			headerLines = append(headerLines, line)
 		} else { 
+			// [PERBAIKAN POINT 2] Cek duplikasi dengan Exact Match
+			parts := strings.SplitN(clean, "#", 2)
+			if strings.TrimSpace(parts[0]) == ip {
+				ipExists = true
+			}
 			ipLines = append(ipLines, line) 
 		}
+	}
+
+	// Batalkan proses penambahan ke disk jika IP sudah terdaftar
+	if ipExists {
+		utils.LogInfo("Duplicate IP insertion %s blocked on Perm Deny List", ip)
+		return
 	}
 
 	// Jika file penuh (atau akan penuh dengan masuknya IP ini)
@@ -230,7 +267,7 @@ func EnforcePermDenyLimitAndAdd(ip, reason string) {
 
 		// Cabut IP yang dibuang dari tabel Kernel secara langsung
 		for _, pLine := range pruned {
-			parts := strings.SplitN(pLine, " ", 2)
+			parts := strings.SplitN(pLine, " ", 2) // Handle format IP yang dipisah spasi/komentar
 			prunedIP := strings.TrimSpace(parts[0])
 			go firewall.DynamicDel(prunedIP, "DENY")
 			utils.LogWarn("LIMIT PRUNE: %s removed from Permanent Deny (Exceeds %d Max Limit)", prunedIP, limit)
