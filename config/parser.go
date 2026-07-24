@@ -60,6 +60,20 @@ func loadDefaults() {
 		"RAF_LF_CYBERPANEL":       "5",
 		"RAF_LF_AAPANEL":          "5",
 		"RAF_LF_MODSEC":           "5",
+
+		// ==============================================================================
+		// [FITUR BARU] LFD CUSTOM LOG PATH OVERRIDE (Default: "" / Kosong)
+		// Jika kosong, sistem akan menggunakan fitur Intelligent Auto-Discovery
+		// ==============================================================================
+		"RAF_LOG_SSHD":            "",
+		"RAF_LOG_FTPD":            "",
+		"RAF_LOG_EXIM":            "",
+		"RAF_LOG_CPANEL":          "",
+		"RAF_LOG_DIRECTADMIN":     "",
+		"RAF_LOG_PLESK":           "",
+		"RAF_LOG_CYBERPANEL":      "",
+		"RAF_LOG_AAPANEL":         "",
+		"RAF_LOG_MODSEC":          "",
 		
 		// Limits
 		"RAF_DENY_IP_LIMIT":       "2000",
