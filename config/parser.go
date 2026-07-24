@@ -110,11 +110,23 @@ func LoadAll(configPath, allowPath, denyPath string) {
 				continue
 			}
 			parts := strings.SplitN(line, "=", 2)
-			if len(parts) == 2 && strings.HasPrefix(strings.TrimSpace(parts[0]), "RAF_") {
+			if len(parts) == 2 {
 				key := strings.TrimSpace(parts[0])
-				// Bersihkan kutip ganda/tunggal yang mungkin diketik user
 				val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
-				CoreData.Config[key] = val
+				
+				// [PERBAIKAN POINT 6] Ambil Parameter Khusus Debug
+				if key == "RA_full_debug" {
+					if val == "1" || strings.ToLower(val) == "true" {
+						utils.IsDebug = true
+						utils.LogInfo("RoninArmor Debug Mode (RA_full_debug) is currently ENABLED. Verbose logging activated.")
+					} else {
+						utils.IsDebug = false
+					}
+				}
+
+				if strings.HasPrefix(key, "RAF_") {
+					CoreData.Config[key] = val
+				}
 			}
 		}
 		file.Close()
@@ -155,17 +167,14 @@ func parseListFile(path string, list4, list6 *[]string) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		
-		// Abaikan baris kosong atau komentar utuh
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		
-		// Filter komentar di ujung baris (misal: "1.2.3.4 # Admin IP")
 		if idx := strings.Index(line, "#"); idx != -1 {
 			line = strings.TrimSpace(line[:idx])
 		}
 
-		// Validasi format IP / CIDR
 		ipType := utils.CheckIPType(line)
 		if ipType == "4" {
 			*list4 = append(*list4, line)
