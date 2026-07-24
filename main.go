@@ -105,6 +105,20 @@ func main() {
 		return
 	}
 
+	// [PERBAIKAN POINT 4] B0. ISOLASI PROSES DAEMON
+	// Mencegah user mengeksekusi Daemon start secara langsung dari CLI yang 
+	// berpotensi mematikan Daemon dashboard (Process Crash).
+	if os.Getenv("CALLER") != "ronin-ui-dashboard" {
+		fmt.Println("======================================================")
+		fmt.Println(" ERROR: RONIN-RAF DAEMON CANNOT BE STARTED FROM CLI   ")
+		fmt.Println("======================================================")
+		fmt.Println(" The RAF Daemon must be orchestrated by the Ronin Dashboard.")
+		fmt.Println(" CLI usage is strictly for issuing commands to the active daemon.")
+		fmt.Println(" Example usage: raf -d 1.1.1.1")
+		fmt.Println(" Type 'raf -h' or './ronin-raf-daemon -h' for help.")
+		os.Exit(1)
+	}
+
 	// B. PRE-FLIGHT CHECKS
 	if os.Geteuid() != 0 {
 		fmt.Println("CRITICAL ERROR: Ronin Aegis Firewall (RAF) Daemon must be run as ROOT!")
