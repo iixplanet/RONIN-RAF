@@ -93,7 +93,7 @@ func DynamicAdd(ip string, listType string) {
 	// Eksekusi senyap dengan flag pengabaian error (-!)
 	cmd := exec.Command("ipset", "-!", "add", setName, ip)
 	if err := cmd.Run(); err == nil {
-		utils.LogInfo("DYNAMIC INJECT: %s seamlessly applied to Kernel Set [%s]", ip, setName)
+		utils.LogInfo("BLOCK SUCCESS: %s successfully added to blocklist [%s]", ip, setName)
 	}
 }
 
@@ -107,7 +107,7 @@ func DynamicDel(ip string, listType string) {
 
 	cmd := exec.Command("ipset", "-!", "del", setName, ip)
 	if err := cmd.Run(); err == nil {
-		utils.LogInfo("DYNAMIC REVOKE: %s seamlessly removed from Kernel Set [%s]", ip, setName)
+		utils.LogInfo("REMOVAL SUCCESS: %s successfully remove from blocklist [%s]", ip, setName)
 	}
 }
 
