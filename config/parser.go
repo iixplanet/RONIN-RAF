@@ -135,11 +135,14 @@ func LoadAll(configPath, allowPath, denyPath string) {
 				key := strings.TrimSpace(parts[0])
 				val := strings.Trim(strings.TrimSpace(parts[1]), `"'`)
 				
+				
 				// [MODIFIKASI POINT 6] Deteksi Parameter Debug Khusus
 				if key == "RA_full_debug" {
-					if val == "1" || strings.ToLower(val) == "true" {
+					if val == "1" || strings.ToLower(val) == "true" || strings.ToLower(val) == "on" {
 						utils.IsDebug = true
 						utils.LogInfo("INFO: Debug Mode is ENABLED.")
+					} else {
+						utils.IsDebug = false
 					}
 				}
 
