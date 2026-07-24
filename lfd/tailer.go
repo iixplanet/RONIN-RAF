@@ -241,9 +241,10 @@ func StartLFDEngine() {
 		return 
 	}
 
-	// Menyalakan sistem penunjang LFD
 	go InitTempBans()
+	go InitTempAllows()      // [TAMBAHAN BARU]
 	go TempBanManager()
+	go TempAllowManager()    // [TAMBAHAN BARU]
 	go CleanupStrikes()
 
 	// Spawn Watchers untuk tiap Layanan
