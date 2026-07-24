@@ -93,7 +93,12 @@ func DynamicAdd(ip string, listType string) {
 	// Eksekusi senyap dengan flag pengabaian error (-!)
 	cmd := exec.Command("ipset", "-!", "add", setName, ip)
 	if err := cmd.Run(); err == nil {
-		utils.LogInfo("BLOCK SUCCESS: %s successfully added to blocklist [%s]", ip, setName)
+		// Logika cerdas untuk membedakan antara aksi Allow dan Deny pada teks Log
+		if listType == "ALLOW" {
+			utils.LogInfo("ALLOW SUCCESS: %s successfully added to whitelist [%s]", ip, setName)
+		} else {
+			utils.LogInfo("BLOCK SUCCESS: %s successfully added to blocklist [%s]", ip, setName)
+		}
 	}
 }
 
@@ -107,7 +112,11 @@ func DynamicDel(ip string, listType string) {
 
 	cmd := exec.Command("ipset", "-!", "del", setName, ip)
 	if err := cmd.Run(); err == nil {
-		utils.LogInfo("REMOVAL SUCCESS: %s successfully remove from blocklist [%s]", ip, setName)
+		if listType == "ALLOW" {
+			utils.LogInfo("REMOVAL SUCCESS: %s successfully removed from whitelist [%s]", ip, setName)
+		} else {
+			utils.LogInfo("REMOVAL SUCCESS: %s successfully removed from blocklist [%s]", ip, setName)
+		}
 	}
 }
 
