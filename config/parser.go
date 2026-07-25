@@ -172,6 +172,13 @@ func LoadAll(configPath, allowPath, denyPath string) {
 		}
 	}
 
+    publicIP := utils.GetPublicIP()
+	if publicIP != "" {
+		CoreData.AllowList4 = append(CoreData.AllowList4, publicIP)
+		utils.LogDebug("ANTI-LOCKOUT: Server Public IP (%s) automatically whitelisted in RAM.", publicIP)
+	}
+
+	
 	// 5. Eksekusi Parsing File Allow, Deny, dan Ignore Manual
 	parseListFile(allowPath, &CoreData.AllowList4, &CoreData.AllowList6)
 	parseListFile(denyPath, &CoreData.DenyList4, &CoreData.DenyList6)
