@@ -211,30 +211,58 @@ func escalateToPermBan(ip, reason string) {
 }
 
 // AddStrike mencatat gagal login, menindak jika limit tercapai (Auth Failure Tracker)
+// AddStrike mencatat gagal login, menindak jika limit tercapai (Auth Failure Tracker)
 func AddStrike(ip, service string, maxLimit int) {
 	// 1. Cek Anti-Lockout (Whitelist & LFD Ignore)
 	config.CoreData.Mutex.RLock()
 	isSafe := false
 	
-	// Cek Perm Allow (Kebal Semua Aturan Firewall & LFD)
 	for _, safeIP := range config.CoreData.AllowList4 { if ip == safeIP { isSafe = true; break } }
 	for _, safeIP := range config.CoreData.AllowList6 { if ip == safeIP { isSafe = true; break } }
 	
-	// [FITUR LFD IGNORE] Cek file raf.ignore (Tetap tunduk pada firewall, tapi kebal dari LFD Blokir Gagal Login)
 	if !isSafe {
 		for _, safeIP := range config.CoreData.IgnoreList4 { if ip == safeIP { isSafe = true; break } }
 		for _, safeIP := range config.CoreData.IgnoreList6 { if ip == safeIP { isSafe = true; break } }
 	}
+	
+	triggerStr := config.CoreData.Config["RAF_LF_PERM_BAN_TRIGGER"]
+	durStr := config.CoreData.Config["RAF_LF_TEMP_BAN_TIME"]
 	config.CoreData.Mutex.RUnlock()
 
 	if isSafe { 
-		// Menggunakan istilah profesional
 		utils.LogDebug("RAF LFD BYPASS: IP %s matched whitelist/ignore list. Auth failure dismissed.", ip)
 		return 
 	}
 
-	// 2. Tambahkan Poin (Failed Attempt) dalam Mode Thread-Safe
+	trigger := 4
+	if t, err := strconv.Atoi(triggerStr); err == nil && t > 0 { trigger = t }
+	
+	duration := 3600
+	if d, err := strconv.Atoi(durStr); err == nil && d > 0 { duration = d }
+
+	// =========================================================================
+	// [PERBAIKAN BUG ANTI-SPAM LOGGING]
+	// Hentikan proses jika IP sedang dalam masa Temp Ban atau sudah Permanen
+	// =========================================================================
 	EngineMutex.Lock()
+	if _, exists := TempBans[ip]; exists {
+		EngineMutex.Unlock()
+		return // Blockir berulang diabaikan agar tidak spam di log terminal
+	}
+	if TempBanHistory[ip] >= trigger {
+		EngineMutex.Unlock()
+		return // IP sudah permanen ban, hentikan pembacaan log dari IP ini selamanya
+	}
+	// =========================================================================
+
+	// Cetak Peringatan di Terminal HANYA jika lolos blokade di atas
+	if service == "MODSEC" {
+		utils.LogWarn("WAF ALARM: Target %s triggered Web Application Firewall rule.", ip)
+	} else {
+		utils.LogWarn("AUTH ALARM: Target %s failed %s authentication.", ip, service)
+	}
+
+	// 2. Tambahkan Poin (Failed Attempt) dalam Mode Thread-Safe
 	if StrikeMap[ip] == nil { StrikeMap[ip] = make(map[string]*StrikeRecord) }
 	if StrikeMap[ip][service] == nil { StrikeMap[ip][service] = &StrikeRecord{Count: 0, LastStrike: time.Now()} }
 
@@ -242,36 +270,19 @@ func AddStrike(ip, service string, maxLimit int) {
 	record.Count++
 	record.LastStrike = time.Now()
 	currentCount := record.Count
+	TempBanHistory[ip]++ // Histori hanya naik kalau benar-benar dieksekusi (BUKAN karena log delay)
+	histCount := TempBanHistory[ip]
 	EngineMutex.Unlock()
 
-	
-	
 	if service == "MODSEC" {
 		utils.LogDebug("RAF LFD TRACKER: Memory recorded WAF violation %d/%d for %s", currentCount, maxLimit, ip)
 	} else {
 		utils.LogDebug("RAF LFD TRACKER: Memory recorded auth failure %d/%d for %s (Service: %s)", currentCount, maxLimit, ip, service)
 	}
 
-	
 	// 3. Jika Limit Tercapai, Eksekusi Hukuman
 	if currentCount >= maxLimit {
-		config.CoreData.Mutex.RLock()
-		durStr := config.CoreData.Config["RAF_LF_TEMP_BAN_TIME"]
-		triggerStr := config.CoreData.Config["RAF_LF_PERM_BAN_TRIGGER"]
-		config.CoreData.Mutex.RUnlock()
-
-		duration := 3600 // Default 1 Jam
-		trigger := 4     // Default Pindah ke Permanen setelah 4x Temp Ban
 		
-		if d, err := strconv.Atoi(durStr); err == nil && d > 0 { duration = d }
-		if t, err := strconv.Atoi(triggerStr); err == nil && t > 0 { trigger = t }
-
-		EngineMutex.Lock()
-		TempBanHistory[ip]++
-		histCount := TempBanHistory[ip]
-		EngineMutex.Unlock()
-
-		// Gunakan istilah profesional sesuai dengan tipe serangan
 		var reason string
 		if service == "MODSEC" {
 			reason = fmt.Sprintf("WAF/ModSecurity Violation (%d exploit attempts)", currentCount)
@@ -279,14 +290,13 @@ func AddStrike(ip, service string, maxLimit int) {
 			reason = fmt.Sprintf("%s Bruteforce Detected (%d failed attempts)", service, currentCount)
 		}
 
-		
 		// 4. ESKALASI PERMANEN
 		if histCount >= trigger {
 			utils.LogWarn("RAF LFD ESCALATION: %s hit Temp Ban %d times. Converted to Permanent Ban.", ip, histCount)
 			
 			escalateToPermBan(ip, "RAF LFD Escalation: Repeat Offender ("+service+")")
 			
-			// Bersihkan dari cache memori agar tidak bentrok
+			// Bersihkan state, tapi biarkan histori TempBanHistory tetap >= 4 (sebagai penanda Anti-Spam di masa depan)
 			EngineMutex.Lock()
 			delete(TempBans, ip)
 			delete(StrikeMap, ip)
@@ -299,11 +309,14 @@ func AddStrike(ip, service string, maxLimit int) {
 		ExecuteBan(ip, reason, duration)
 		
 		EngineMutex.Lock()
-		delete(StrikeMap, ip) // Reset counter untuk service ini
+		delete(StrikeMap, ip) // Reset counter agar serangan berikutnya masuk fase Temp Ban ke-2
 		EngineMutex.Unlock()
 	}
 }
+	
+	
 
+		
 // GetActiveFailures membaca memori RAM untuk dikirimkan ke Dashboard UI (Tab Live Auth Failures)
 func GetActiveFailures() []map[string]interface{} {
 	EngineMutex.Lock()
