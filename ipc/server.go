@@ -65,13 +65,14 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 		}
 
 		// Delegasi Eksekusi Perintah
+		// Delegasi Eksekusi Perintah
 		switch payload.Action {
 		case "RELOAD":
 			reloadCallback()
-			conn.Write([]byte("RAF RELOAD SUCCESS: Zero-Downtime Reload Executed.\n"))
+			conn.Write([]byte("SUCCESS: RAF Zero-Downtime Reload Executed.\n"))
 
 		case "STOP":
-			conn.Write([]byte("RAF STOP SUCCESS: Initiating Daemon Shutdown Sequence.\n"))
+			conn.Write([]byte("SUCCESS: RAF Daemon Shutdown Sequence Initiated.\n"))
 			go func() {
 				p, _ := os.FindProcess(os.Getpid())
 				p.Signal(syscall.SIGTERM) // Kirim sinyal shutdown elegan ke diri sendiri
