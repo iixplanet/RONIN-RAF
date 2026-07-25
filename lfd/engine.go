@@ -553,4 +553,34 @@ func TempAllowManager() {
 	}
 }
 
+// ==============================================================================
+// 6. CLI HELPER & SEARCH ENGINE (GREP)
+// ==============================================================================
 
+// IsTempBanned mengecek apakah IP sedang diblokir sementara
+func IsTempBanned(ip string) bool {
+	EngineMutex.Lock()
+	defer EngineMutex.Unlock()
+	_, exists := TempBans[ip]
+	return exists
+}
+
+// GetTempBanInfo mengambil data blokir sementara untuk CLI Grep
+func GetTempBanInfo(ip string) (bool, string, string) {
+	EngineMutex.Lock()
+	defer EngineMutex.Unlock()
+	if rec, exists := TempBans[ip]; exists {
+		return true, rec.Reason, rec.ExpiresAt.Format("2006-01-02 15:04:05")
+	}
+	return false, "", ""
+}
+
+// GetTempAllowInfo mengambil data allow sementara untuk CLI Grep
+func GetTempAllowInfo(ip string) (bool, string, string) {
+	EngineMutex.Lock()
+	defer EngineMutex.Unlock()
+	if rec, exists := TempAllows[ip]; exists {
+		return true, rec.Reason, rec.ExpiresAt.Format("2006-01-02 15:04:05")
+	}
+	return false, "", ""
+}
