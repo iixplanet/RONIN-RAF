@@ -2,8 +2,11 @@
 package utils
 
 import (
+	"io"
 	"net"
+	"net/http"
 	"strings"
+	"time"
 )
 
 // ==============================================================================
@@ -117,3 +120,35 @@ func CheckIPType(ipStr string) string {
 	
 	return ""
 }
+
+
+var cachedPublicIP string
+
+// GetPublicIP mengambil IP Publik dari server jika server berada di balik NAT Cloud
+func GetPublicIP() string {
+	// Gunakan cache agar reload tidak memakan waktu
+	if cachedPublicIP != "" { 
+		return cachedPublicIP 
+	}
+	
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("https://api.ipify.org")
+	if err != nil { 
+		return "" 
+	}
+	defer resp.Body.Close()
+	
+	body, err := io.ReadAll(resp.Body)
+	if err != nil { 
+		return "" 
+	}
+	
+	ip := strings.TrimSpace(string(body))
+	if CheckIPType(ip) == "4" {
+		cachedPublicIP = ip
+		return ip
+	}
+	return ""
+}
+
+	
