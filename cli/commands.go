@@ -108,6 +108,13 @@ func Execute(args []string) {
 	case "-df", "--flush-deny":
 		sendCommand(CommandPayload{Action: "FLUSH_DENY"})
 
+	case "-g", "--grep", "--search":
+		if len(args) < 2 {
+			colorPrint("red", "Usage: raf -g <ip>")
+			return
+		}
+		sendCommand(CommandPayload{Action: "SEARCH", IP: args[1]})	
+
 	case "-h", "--help":
 		printHelp()
 
@@ -185,6 +192,7 @@ Basic Operations:
   -a,  --allow <ip> [comment]     : Permanently whitelist an IP
   -dr, --denyrm <ip>              : Remove an IP from permanent block
   -ar, --allowrm <ip>             : Remove an IP from whitelist
+  -g,  --grep <ip>                : Search/Check if an IP is blocked or allowed (like raf -g)
 
 Advanced / Temporary Operations:
   -td, --tempdeny <ip> <sec> [port] [comment] : Block IP temporarily (e.g., raf -td 1.1.1.1 3600 22)
