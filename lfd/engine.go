@@ -244,9 +244,15 @@ func AddStrike(ip, service string, maxLimit int) {
 	currentCount := record.Count
 	EngineMutex.Unlock()
 
-	// Menggunakan istilah profesional
-	utils.LogDebug("RAF LFD TRACKER: Memory recorded auth failure %d/%d for %s (Service: %s)", currentCount, maxLimit, ip, service)
+	
+	
+	if service == "MODSEC" {
+		utils.LogDebug("RAF LFD TRACKER: Memory recorded WAF violation %d/%d for %s", currentCount, maxLimit, ip)
+	} else {
+		utils.LogDebug("RAF LFD TRACKER: Memory recorded auth failure %d/%d for %s (Service: %s)", currentCount, maxLimit, ip, service)
+	}
 
+	
 	// 3. Jika Limit Tercapai, Eksekusi Hukuman
 	if currentCount >= maxLimit {
 		config.CoreData.Mutex.RLock()
