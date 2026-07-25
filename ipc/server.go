@@ -78,22 +78,65 @@ func handleConnection(conn net.Conn, reloadCallback func()) {
 				p.Signal(syscall.SIGTERM) // Kirim sinyal shutdown elegan ke diri sendiri
 			}()
 
+
 		case "DENY":
-			// Blokir Permanen
+			// [FITUR BARU] Cek & Hapus dari Allow List jika ada (Cegah Bentrok Aturan)
+			msg := fmt.Sprintf("SUCCESS: %s permanently denied.\n", payload.IP)
+			if isAllow, _ := searchInFile(config.AllowFile, payload.IP); isAllow {
+				removeFromFile(config.AllowFile, payload.IP)
+				firewall.DynamicDel(payload.IP, "ALLOW")
+				msg += " -> Auto-Removed from Permanent Allow List.\n"
+			}
+
 			EnforcePermDenyLimitAndAdd(payload.IP, payload.Reason)
 			firewall.DynamicAdd(payload.IP, "DENY")
 			
-			// [TRIGGER EMAIL ALERT] Log ini WAJIB ada agar mainssl bisa mengirim email saat block manual
 			utils.LogWarn("ADMIN BAN: IP %s permanently denied via Dashboard. Reason: %s", payload.IP, payload.Reason)
-			
-			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s permanently denied.\n", payload.IP)))
+			conn.Write([]byte(msg))
 
 		case "ALLOW":
-			// Whitelist Permanen
+			msg := fmt.Sprintf("SUCCESS: %s permanently whitelisted.\n", payload.IP)
+			
+			// [FITUR BARU] Cek & Hapus dari Perm Deny List
+			if isDeny, _ := searchInFile(config.DenyFile, payload.IP); isDeny {
+				removeFromFile(config.DenyFile, payload.IP)
+				firewall.DynamicDel(payload.IP, "DENY")
+				msg += " -> Auto-Removed from Permanent Deny List.\n"
+			}
+			
+			// [FITUR BARU] Cek & Hapus dari Temp Ban LFD
+			if lfd.IsTempBanned(payload.IP) {
+				lfd.ExecuteUnban(payload.IP)
+				msg += " -> Auto-Removed from LFD Temporary Ban.\n"
+			}
+
 			appendToFile(config.AllowFile, payload.IP, payload.Reason)
 			firewall.DynamicAdd(payload.IP, "ALLOW")
-			conn.Write([]byte(fmt.Sprintf("SUCCESS: %s permanently whitelisted.\n", payload.IP)))
+			conn.Write([]byte(msg))
 
+		case "SEARCH":
+			// [FITUR BARU] Meniru fungsi (csf -g)
+			isAllow, allowReason := searchInFile(config.AllowFile, payload.IP)
+			isDeny, denyReason := searchInFile(config.DenyFile, payload.IP)
+			isTempBan, tbReason, tbExp := lfd.GetTempBanInfo(payload.IP)
+			isTempAllow, taReason, taExp := lfd.GetTempAllowInfo(payload.IP)
+			
+			// Prefix SUCCESS agar teks menjadi hijau di CLI
+			var res []string
+			res = append(res, fmt.Sprintf("SUCCESS: === SEARCH RESULTS FOR %s ===", payload.IP)) 
+			
+			found := false
+			if isAllow { res = append(res, fmt.Sprintf("[PERM ALLOW] Yes | Reason: %s", allowReason)); found = true }
+			if isDeny { res = append(res, fmt.Sprintf("[PERM DENY] Yes | Reason: %s", denyReason)); found = true }
+			if isTempBan { res = append(res, fmt.Sprintf("[TEMP BAN] Yes | Expires: %s | Reason: %s", tbExp, tbReason)); found = true }
+			if isTempAllow { res = append(res, fmt.Sprintf("[TEMP ALLOW] Yes | Expires: %s | Reason: %s", taExp, taReason)); found = true }
+			
+			if !found {
+				res = append(res, "Status: NOT BLOCKED / NOT ALLOWED (No records found in any list).")
+			}
+			
+			conn.Write([]byte(strings.Join(res, "\n") + "\n"))
+			
 		case "IGNORE":
 			// LFD Bypass / Ignore Permanen (Tetap tunduk pada firewall)
 			appendToFile(config.IgnoreFile, payload.IP, payload.Reason)
@@ -199,6 +242,30 @@ func removeIPFromSlice(slice []string, ip string) []string {
 		}
 	}
 	return result
+}
+
+// searchInFile mencari apakah IP terdaftar di dalam file dan mengambil alasannya
+func searchInFile(path, ip string) (bool, string) {
+	data, err := os.ReadFile(path)
+	if err != nil { return false, "" }
+	
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		clean := strings.TrimSpace(line)
+		if clean == "" || strings.HasPrefix(clean, "#") { continue }
+		
+		parts := strings.SplitN(clean, "#", 2)
+		existingIP := strings.TrimSpace(parts[0])
+		
+		if existingIP == ip {
+			reason := "Manual Override (No Info)"
+			if len(parts) > 1 {
+				reason = strings.TrimSpace(parts[1])
+			}
+			return true, reason
+		}
+	}
+	return false, ""
 }
 
 
