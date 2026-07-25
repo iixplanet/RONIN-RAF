@@ -44,7 +44,13 @@ func BootSequence() {
 	// 3. Inject Rules to OS Kernel
 	firewall.ApplyIptables()
 	
-	// 4. Start Background Downloader (Spamhaus, DShield, dll)
+	// =========================================================
+	// 4. [PERBAIKAN BUG] Sinkronkan kembali memori Temp Ban/Allow 
+	// yang hilang akibat proses Flush Kernel di poin (3) atas.
+	// =========================================================
+	lfd.SyncRoutinesToKernel()
+	
+	// 5. Start Background Downloader (Spamhaus, DShield, dll)
 	intelligence.StartBackgroundWorkers()
 	
 	utils.LogInfo("RAF Network Defense Layer Active.")
