@@ -279,7 +279,15 @@ func AddStrike(ip, service string, maxLimit int) {
 	}
 
 	// 3. Jika Limit Tercapai, Eksekusi Hukuman
+	// 3. Jika Limit Tercapai, Eksekusi Hukuman
 	if currentCount >= maxLimit {
+		
+		// --- [TAMBAHKAN KODE INI] ---
+		EngineMutex.Lock()
+		TempBanHistory[ip]++ // Histori HANYA NAIK saat IP benar-benar terkena Temp Ban
+		histCount := TempBanHistory[ip]
+		EngineMutex.Unlock()
+		// ----------------------------
 		
 		var reason string
 		if service == "MODSEC" {
