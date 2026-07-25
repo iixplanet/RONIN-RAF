@@ -1,0 +1,220 @@
+=======================================================================================
+  RONIN AEGIS FIREWALL (RAF) - CORE ENGINE                            
+=======================================================================================
+VERSION       : Enterprise Core Engine
+AUTHOR        : RONINARMOR SOFTWARE
+INTEGRATIONS  : Iptables, IP6tables, IPSet, Kernel Netfilter, SystemD
+TARGET OS     : CentOS, AlmaLinux, Rocky Linux, Ubuntu, Debian
+=======================================================================================
+
+TABLE OF CONTENTS:
+  1. CORE ARCHITECTURE & PERFORMANCE ENGINE
+  2. COMMAND LINE INTERFACE (CLI) & USAGE EXAMPLES
+  3. LOGIN FAILURE DAEMON (LFD) - INTRUSION DETECTION LIFECYCLE
+  4. LAYER 4 NETWORK MITIGATIONS (ANTI-DDOS & EGRESS)
+  5. THREAT INTELLIGENCE & GEO-IP ORCHESTRATION
+  6. ANTI-LOCKOUT & ADMIN IMMUNITY SYSTEM
+  7. DAEMON IPC, CRASH RECOVERY & HOT-RELOAD
+  8. FILE SYSTEM MANIFEST
+=======================================================================================
+
+
+---------------------------------------------------------------------------------------
+1. CORE ARCHITECTURE & PERFORMANCE ENGINE
+---------------------------------------------------------------------------------------
+RAF is Event-Driven, Multi-Threaded Daemon 
+Faster and low process cpu & memory. It operates autonomously in the background to protect the server 
+without causing CPU overhead or network latency.
+
+[+] Stateful Packet Inspection (SPI)
+    Instead of scanning every single packet that passes through the network card, 
+    RAF evaluates the "State" of a connection. If a connection is already established 
+    and authenticated (State: ESTABLISHED/RELATED), it completely bypasses the LFD 
+    and Anti-DDoS filtering chains. This reduces CPU usage by up to 80% on high-traffic 
+    servers.
+
+[+] Atomic Kernel Injection (Zero-Downtime)
+    RAF uses `iptables-restore` and `ipset restore` in batch execution mode. When the 
+    firewall reloads, it builds the entire ruleset in memory (Buffer) and injects it 
+    into the OS Kernel in a single, atomic operation (milliseconds). Active SSH 
+    sessions, database connections, and web downloads are NEVER interrupted.
+
+[+] O(1) Time Complexity with IPSet Hash Mapping
+    Standard firewalls create one iptables rule per IP. If you block 100,000 IPs, the 
+    server crashes due to sequential reading (O(N)). RAF uses Kernel Hash Maps (IPSet). 
+    Checking if an IP is blocked takes the exact same amount of CPU time whether the 
+    list has 1 IP or 500,000 IPs. IPv4 and IPv6 are separated into isolated namespaces.
+
+
+---------------------------------------------------------------------------------------
+2. COMMAND LINE INTERFACE (CLI) & USAGE EXAMPLES
+---------------------------------------------------------------------------------------
+The CLI (`raf`) acts as a client that sends JSON payloads to the background daemon 
+via a secure Unix Socket (`/var/run/ronin-raf.sock`).
+
+[+] Basic List Management
+    -d,  --deny <ip> [reason]  : Permanently block an IP. (e.g., raf -d 1.1.1.1 Hacker)
+                                 *Auto-removes the IP from Allow/Temp lists if present.
+    -a,  --allow <ip> [reason] : Permanently whitelist an IP. Immune to all bans.
+    -dr, --denyrm <ip>         : Remove an IP from the Permanent Deny list.
+    -ar, --allowrm <ip>        : Remove an IP from the Permanent Allow list.
+    
+[+] Advanced Search Engine
+    -g,  --grep <ip>           : Scans all memory modules for the IP. Output includes:
+                                 - Is it Permanently Allowed/Denied?
+                                 - Is it Temporarily Banned/Allowed? (Shows Expiry Time)
+                                 - Does it have a history of Temp Bans? (Strike count)
+
+[+] Temporary Operations (Time-Based)
+    -td, --tempdeny <ip> <seconds> [port] [reason]
+         Temporarily bans an IP for X seconds. Automatically revoked when time expires.
+         Example: raf -td 10.0.0.1 3600 80 "HTTP Flood"
+    -ta, --tempallow <ip> <seconds> [port] [reason]
+         Temporarily whitelists an IP. Perfect for giving client temporary access.
+    -tr, --temprm <ip>
+         Manually revokes an active Temporary Ban or Temporary Allow immediately.
+
+[+] System Overrides & Flush Commands
+    -r,  --restart             : Hot-Reload configurations without dropping connections.
+    -x,  --stop                : Safely terminate the Daemon and flush ALL kernel rules.
+    -tf, --flush-temp          : Wipes out all active Temporary Bans from memory.
+    -df, --flush-deny          : Wipes the entire Permanent Deny list (raf.deny).
+
+
+---------------------------------------------------------------------------------------
+3. LOGIN FAILURE DAEMON (LFD) - INTRUSION DETECTION LIFECYCLE
+---------------------------------------------------------------------------------------
+The LFD is an intelligent, low-resource log tailer. It uses the `Inotify` mechanism to 
+monitor log files in real-time. If a log is rotated (e.g., via logrotate), the watcher 
+automatically re-hooks to the new file.
+
+[+] Supported Threat Vectors:
+    SSHD, ProFTPd/Pure-FTPd/Vsftpd, Exim/Postfix/Dovecot, cPanel/WHM, DirectAdmin, 
+    Plesk, CyberPanel, aaPanel, and ModSecurity (WAF).
+
+[+] The Intelligent Escalation Lifecycle:
+    1. STRIKE TRACKING: When a failed login occurs, RAF extracts the IP using highly 
+       precise Regex and saves it to a RAM map (`StrikeMap`).
+    2. TEMPORARY BAN: If the IP fails X times (e.g., 5 hits), it receives a "Temp Ban" 
+       for 1 hour. It is injected into the firewall, and the StrikeMap is reset to 0.
+    3. REPEAT OFFENDER TRACKING: A hidden RAM variable (`TempBanHistory`) increments 
+       every time the IP receives a Temp Ban.
+    4. PERMANENT ESCALATION: If the hacker returns after 1 hour, attacks again, and 
+       their `TempBanHistory` reaches the limit (Default: 4), the system escalates the 
+       punishment. The IP is converted to a PERMANENT BAN, saved to the Hard Drive 
+       (`raf.deny`), and locked out forever.
+    5. ANTI-SPAM LOGGING: Once an IP is Permanently Banned, the LFD ignores future log 
+       entries from this IP to prevent your terminal and log files from being spammed.
+
+[+] Smart Memory Management (FIFO Pruning):
+    To prevent server memory leaks (OOM), RAF enforces a strict limit on lists.
+    If `RAF_DENY_IP_LIMIT` is set to 2000, and the 2001st IP is blocked, RAF will 
+    automatically remove the 1st (oldest) IP from the list to make room.
+
+
+---------------------------------------------------------------------------------------
+4. LAYER 4 NETWORK MITIGATIONS (ANTI-DDOS & EGRESS)
+---------------------------------------------------------------------------------------
+RAF executes advanced packet filtering directly at the OS Network OSI Layer 4.
+
+[+] Invalid Packet & Stealth Scan Filter
+    Drops malformed TCP packets (XMAS, NULL, FIN/RST Scans). Enforces the "Golden Rule" 
+    of networking: Every NEW TCP connection MUST start with a SYN flag, otherwise DROP.
+
+[+] SYN Flood Protection (DDoS Mitigation)
+    Limits the rate of incoming TCP SYN packets using Kernel Hashlimits. 
+    If requests exceed `RAF_SYNFLOOD_RATE` (e.g., 100/sec) with a burst of 150, 
+    excess packets are silently dropped before they reach the web server.
+
+[+] Connection Limiting (Connlimit)
+    Prevents Slowloris and Socket Exhaustion attacks by restricting the maximum number 
+    of parallel connections a single IP can open to a specific port.
+    (Config Syntax: port;limit -> e.g., 22;5, 80;20).
+
+[+] Port Flooding Protection (Recent Module)
+    Tracks the temporal frequency of connections using the Netfilter `recent` module. 
+    If a botnet tries to brute-force SSH, this rule limits them to X new connections 
+    per Y seconds, dropping any attempts that exceed the speed limit.
+
+[+] SMTP Egress Filter (Outbound Spam Prevention)
+    Stops compromised PHP scripts (Webshells) from sending Outbound Spam. 
+    RAF converts usernames to OS UIDs and ONLY allows specific system users 
+    (root, exim, postfix, mailman) to communicate on ports 25, 465, and 587.
+
+[+] SMTP Auth Restriction (Anti-Credential Stuffing)
+    Blocks external IPs from hitting SMTP Auth ports. Authentication is restricted to 
+    Localhost/Webmail or explicitly Whitelisted IPs.
+
+
+---------------------------------------------------------------------------------------
+5. THREAT INTELLIGENCE & GEO-IP ORCHESTRATION
+---------------------------------------------------------------------------------------
+Connects your server to global cybersecurity databases to proactively block botnets.
+
+[+] Multi-Mirror GeoIP Blocking
+    Downloads Country IP Zone files from primary (GitHub IPVerse) and secondary (IPDeny) 
+    mirrors. Uses a fake User-Agent to bypass Cloudflare restrictions. Extracted IPs are 
+    injected into isolated sets (e.g., `cc_CN` for China). 
+    - Can allow or deny entire countries.
+    - Can restrict countries to specific ports (e.g., Deny Russia only on Port 22).
+
+[+] External Threat Feeds
+    Automatically downloads lists like Spamhaus DROP (Hijacked subnets) and DShield 
+    every 24 hours (Configurable via `RAF_BLOCKLIST_INTERVAL`).
+
+
+---------------------------------------------------------------------------------------
+6. ANTI-LOCKOUT & ADMIN IMMUNITY SYSTEM
+---------------------------------------------------------------------------------------
+A failsafe architecture ensuring the Server Owner never loses SSH/Dashboard access.
+
+[+] Hardware Local IP Detector
+    Scans the server's physical Network Interface Cards (NICs) during Boot Sequence. 
+    Extracts all valid IPv4/IPv6 addresses while intelligently ignoring unroutable 
+    Link-Local (fe80::) and Multicast IPs. These IPs are hardcoded into the RAM Whitelist.
+
+[+] Public IP Fetcher & Port Discovery
+    Fetches the server's external NAT Public IP via API. Reads `/etc/ssh/sshd_config` 
+    and the Ronin Dashboard config to dynamically open the correct ports, even if you 
+    changed them manually.
+
+[+] Safe Mode (Testing Timer)
+    If `RAF_TESTING=1` is enabled in the config, RAF initiates a 5-minute countdown. 
+    If you configure a bad rule that drops your SSH connection, simply wait 5 minutes. 
+    The daemon will execute a `Teardown()` function, flushing all rules and restoring 
+    your access automatically.
+
+
+---------------------------------------------------------------------------------------
+7. DAEMON IPC, CRASH RECOVERY & HOT-RELOAD
+---------------------------------------------------------------------------------------
+[+] Unix Socket Communication (IPC)
+    The CLI and Web Dashboard never edit firewall rules directly. They send JSON to 
+    `/var/run/ronin-raf.sock`. This ensures Thread-Safety, meaning if 10 admins run 
+    a command at the exact same time, the Daemon queues and executes them flawlessly.
+
+[+] Zero-Downtime Hot-Reload (SIGHUP)
+    When a reload is triggered, the daemon reconstructs memory, flushes specific custom 
+    chains, and reapplies configs via atomic `restore`. Memory regarding Temp Bans and 
+    Temp Allows is synchronized back into the kernel instantly.
+
+[+] Crash Recovery (State Persistence)
+    Temporary Bans and Allows are saved to a physical disk file (`raf.tempban`). 
+    If the server suffers a power loss or kernel panic, RAF reads this file upon reboot, 
+    calculates the remaining expiry time for each IP, and restores the exact state.
+
+
+---------------------------------------------------------------------------------------
+8. FILE SYSTEM MANIFEST
+---------------------------------------------------------------------------------------
+/usr/local/ronin/config.ronin        : Master Configuration File.
+/usr/local/ronin/lib/raf/raf.allow   : Permanent Whitelist (Persisted to disk).
+/usr/local/ronin/lib/raf/raf.deny    : Permanent Blocklist (Persisted to disk).
+/usr/local/ronin/lib/raf/raf.ignore  : LFD Bypass List (Ignored by log tailers).
+/usr/local/ronin/lib/raf/raf.tempban : State persistence for Active Temp Bans.
+/usr/local/ronin/lib/raf/raf.tempallow: State persistence for Active Temp Allows.
+/usr/local/ronin/lib/raf/zone/       : Local cache directory for downloaded GeoIP zones.
+/usr/local/ronin/logs/raf_engine.log : Engine Log (Auto-truncated/rotated at 5MB).
+/var/run/ronin-raf.sock              : IPC Unix Socket for JSON Payload bridging.
+/var/run/ronin-raf.pid               : Process ID file for SystemD management.
+=======================================================================================
