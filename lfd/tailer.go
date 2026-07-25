@@ -84,8 +84,12 @@ var ThreatSignatures = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)(?:fail|invalid|Failed login|Login error).*?(?:IP:|from)\s*(?:::ffff:)?([a-fA-F0-9\.:]+)`),
 	},
 	"MODSEC": {
-		// Apache / LiteSpeed Classic Error Log Format
-		regexp.MustCompile(`(?i)ModSecurity:\s+(?:Access denied|Warning|Access blocked).*?\[client\s+(?:::ffff:)?([a-fA-F0-9\.:]+?)(?::\d+)?\]`),
+		// Apache / Nginx / LiteSpeed Classic Error Log Format (Menangkap IP yang berada DI DEPAN kata ModSecurity)
+		regexp.MustCompile(`(?i)\[(?:client\s+)?(?:::ffff:)?([a-fA-F0-9\.:]+?)(?::\d+)?\].*?ModSecurity(?:\]|:).*?(?:Access denied|Warning|Access blocked)`),
+		
+		// Format Custom / Fallback (Menangkap IP yang berada DI BELAKANG kata ModSecurity)
+		regexp.MustCompile(`(?i)ModSecurity(?:\]|:).*?(?:Access denied|Warning|Access blocked).*?\[(?:client\s+)?(?:::ffff:)?([a-fA-F0-9\.:]+?)(?::\d+)?\]`),
+		
 		// Nginx / libmodsecurity3 JSON Audit Log Format
 		regexp.MustCompile(`(?i)"client_ip"\s*:\s*"([a-fA-F0-9\.:]+)"`),
 	},
@@ -127,6 +131,12 @@ func parseLogLine(line, service string, maxLimit int) {
 		}
 	}()
 
+    if service == "MODSEC" {
+		if !strings.Contains(line, "403") {
+			return // Abaikan trafik normal dan hentikan proses regex
+		}
+	}
+	
 	signatures, exists := ThreatSignatures[service]
 	if !exists { return } // Service tidak dikenali
 
