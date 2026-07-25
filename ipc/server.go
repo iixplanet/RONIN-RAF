@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 	"raf/config"
 	"raf/firewall"
 	"raf/lfd"
