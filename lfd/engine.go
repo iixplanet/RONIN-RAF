@@ -265,9 +265,15 @@ func AddStrike(ip, service string, maxLimit int) {
 		histCount := TempBanHistory[ip]
 		EngineMutex.Unlock()
 
-		// Menggunakan istilah profesional
-		reason := fmt.Sprintf("%s Bruteforce Detected (%d failed attempts)", service, currentCount)
+		// Gunakan istilah profesional sesuai dengan tipe serangan
+		var reason string
+		if service == "MODSEC" {
+			reason = fmt.Sprintf("WAF/ModSecurity Violation (%d exploit attempts)", currentCount)
+		} else {
+			reason = fmt.Sprintf("%s Bruteforce Detected (%d failed attempts)", service, currentCount)
+		}
 
+		
 		// 4. ESKALASI PERMANEN
 		if histCount >= trigger {
 			utils.LogWarn("RAF LFD ESCALATION: %s hit Temp Ban %d times. Converted to Permanent Ban.", ip, histCount)
