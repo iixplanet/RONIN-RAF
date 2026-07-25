@@ -270,8 +270,6 @@ func AddStrike(ip, service string, maxLimit int) {
 	record.Count++
 	record.LastStrike = time.Now()
 	currentCount := record.Count
-	TempBanHistory[ip]++ // Histori hanya naik kalau benar-benar dieksekusi (BUKAN karena log delay)
-	histCount := TempBanHistory[ip]
 	EngineMutex.Unlock()
 
 	if service == "MODSEC" {
