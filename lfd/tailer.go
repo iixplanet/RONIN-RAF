@@ -119,34 +119,38 @@ func cleanExtractedIP(raw string) string {
 	return raw
 }
 
-// ==============================================================================
-// 3. LOG PARSING ENGINE
-// ==============================================================================
 
 func parseLogLine(line, service string, maxLimit int) {
-	// Fitur Panic Recovery: Memastikan daemon tidak pernah crash jika ada serangan anomali
 	defer func() {
 		if r := recover(); r != nil {
 			utils.LogError("Recovered from panic in LFD Regex parser: %v", r)
 		}
 	}()
 
-    if service == "MODSEC" {
-		if !strings.Contains(line, "403") {
-			return // Abaikan trafik normal dan hentikan proses regex
+	// ====================================================================
+	// [SMART FILTER MODSECURITY]
+	// Hentikan proses jika status BUKAN 403 (Menyelamatkan Status 200 / Normal)
+	// ====================================================================
+	if service == "MODSEC" {
+		is403 := strings.Contains(line, "\"http_code\":403") || 
+				 strings.Contains(line, "\"http_code\": 403") ||
+				 strings.Contains(line, "code 403") ||
+				 strings.Contains(line, " 403 Forbidden")
+		
+		// Jika log ini bukan log pemblokiran (403), lewati (jangan blokir IP-nya)
+		if !is403 {
+			return 
 		}
 	}
-	
+	// ====================================================================
+
 	signatures, exists := ThreatSignatures[service]
 	if !exists { return } // Service tidak dikenali
 
-	// Looping mengecek baris log terhadap seluruh Array Regex milik service tersebut
 	for _, regex := range signatures {
 		match := regex.FindStringSubmatch(line)
-		
 		if len(match) > 1 {
 			var rawIP string
-			// Ambil IP dari Capture Group yang valid/terisi (mengakomodasi group bersarang)
 			for i := 1; i < len(match); i++ {
 				if match[i] != "" { 
 					rawIP = match[i]
@@ -156,13 +160,10 @@ func parseLogLine(line, service string, maxLimit int) {
 
 			if rawIP != "" {
 				cleanIP := cleanExtractedIP(rawIP)
-				
-				// Validasi Absolut: Pastikan ini adalah IP yang sah
 				if net.ParseIP(cleanIP) == nil {
-					continue // Regex salah tangkap string, coba regex berikutnya
+					continue 
 				}
 				
-				// Jika berhasil lolos, eksekusi Poin (Auth Failure) dan putuskan loop
 				utils.LogWarn("AUTH ALARM: Target %s failed %s authentication.", cleanIP, service)
 				AddStrike(cleanIP, service, maxLimit)
 				break
@@ -171,6 +172,7 @@ func parseLogLine(line, service string, maxLimit int) {
 	}
 }
 
+			
 // tailFile membaca log menggunakan Inotify/Polling (Event-Driven, Low CPU)
 func tailFile(filePath, service string, maxLimit int) {
 	t, err := tail.TailFile(filePath, tail.Config{
