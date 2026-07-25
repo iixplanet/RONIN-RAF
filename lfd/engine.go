@@ -597,3 +597,27 @@ func GetTempAllowInfo(ip string) (bool, string, string) {
 	}
 	return false, "", ""
 }
+
+// ==============================================================================
+// 7. KERNEL SYNC UTILITIES (FOR HOT-RELOAD)
+// ==============================================================================
+
+// SyncRoutinesToKernel memulihkan state Temp Ban & Allow ke Kernel Firewall
+// Digunakan secara spesifik saat proses Zero-Downtime Hot Reload dieksekusi.
+func SyncRoutinesToKernel() {
+	EngineMutex.Lock()
+	defer EngineMutex.Unlock()
+
+	// Suntikkan kembali Temp Bans ke tabel RAF_DENY
+	for ip := range TempBans {
+		go firewall.DynamicAdd(ip, "DENY")
+	}
+	
+	// Suntikkan kembali Temp Allows ke tabel RAF_ALLOW
+	for ip := range TempAllows {
+		go firewall.DynamicAdd(ip, "ALLOW")
+	}
+}
+
+
+
