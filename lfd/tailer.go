@@ -120,6 +120,7 @@ func cleanExtractedIP(raw string) string {
 }
 
 
+
 func parseLogLine(line, service string, maxLimit int) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -173,10 +174,11 @@ func parseLogLine(line, service string, maxLimit int) {
 				
 				AddStrike(cleanIP, service, maxLimit)
 				break
-		}
-	}
-}
-
+			} // Tutup if rawIP != ""
+		} // Tutup if len(match) > 1
+	} // Tutup for _, regex := range signatures
+} // <--- INI ADALAH KURUNG KURAWAL YANG HILANG SEBELUMNYA
+			
 			
 // tailFile membaca log menggunakan Inotify/Polling (Event-Driven, Low CPU)
 func tailFile(filePath, service string, maxLimit int) {
