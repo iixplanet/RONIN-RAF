@@ -164,10 +164,15 @@ func parseLogLine(line, service string, maxLimit int) {
 					continue 
 				}
 				
-				utils.LogWarn("AUTH ALARM: Target %s failed %s authentication.", cleanIP, service)
+				// Pisahkan log antara serangan Web (WAF) dan serangan Bruteforce Login
+				if service == "MODSEC" {
+					utils.LogWarn("WAF ALARM: Target %s triggered Web Application Firewall rule.", cleanIP)
+				} else {
+					utils.LogWarn("AUTH ALARM: Target %s failed %s authentication.", cleanIP, service)
+				}
+				
 				AddStrike(cleanIP, service, maxLimit)
 				break
-			}
 		}
 	}
 }
