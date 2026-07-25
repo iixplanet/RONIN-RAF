@@ -93,11 +93,12 @@ var ThreatSignatures = map[string][]*regexp.Regexp{
 		// Nginx / libmodsecurity3 JSON Audit Log Format
 		regexp.MustCompile(`(?i)"client_ip"\s*:\s*"([a-fA-F0-9\.:]+)"`),
 
-		regexp.MustCompile(`(?i)ModSecurity.*?\[msg\s+"\s*((?:[0-9]{1,3}\.){3}[0-9]{1,3})`),
+		regexp.MustCompile(`(?i)ModSecurity(?:\]|:).*?Access denied with code 403.*?\[msg\s+"?\s*((?:[0-9]{1,3}\.){3}[0-9]{1,3})`),
 
-		// [BARU] Fallback (Menangkap IP apa saja setelah ModSecurity Access Denied)
-		regexp.MustCompile(`(?i)ModSecurity(?:\]|:).*?(?:Access denied|code 403).*?\b((?:[0-9]{1,3}\.){3}[0-9]{1,3})\b`),
-	
+		// 4. LITESPEED NATIVE ERROR LOG STRICT MODE
+		// Contoh log: [140.83.85.172:59721] [ModSecurity] Access denied with code 403
+		regexp.MustCompile(`(?i)\[((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?::\d+)?\].*?ModSecurity.*?Access denied with code 403`),
+			
 	},
 }
 
