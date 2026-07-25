@@ -212,6 +212,8 @@ func escalateToPermBan(ip, reason string) {
 
 // AddStrike mencatat gagal login, menindak jika limit tercapai (Auth Failure Tracker)
 // AddStrike mencatat gagal login, menindak jika limit tercapai (Auth Failure Tracker)
+
+// AddStrike mencatat gagal login, menindak jika limit tercapai (Auth Failure Tracker)
 func AddStrike(ip, service string, maxLimit int) {
 	// 1. Cek Anti-Lockout (Whitelist & LFD Ignore)
 	config.CoreData.Mutex.RLock()
@@ -270,7 +272,7 @@ func AddStrike(ip, service string, maxLimit int) {
 	record.Count++
 	record.LastStrike = time.Now()
 	currentCount := record.Count
-	EngineMutex.Unlock()
+	EngineMutex.Unlock() // <- Histori tidak lagi dihitung secara prematur di sini
 
 	if service == "MODSEC" {
 		utils.LogDebug("RAF LFD TRACKER: Memory recorded WAF violation %d/%d for %s", currentCount, maxLimit, ip)
@@ -279,16 +281,15 @@ func AddStrike(ip, service string, maxLimit int) {
 	}
 
 	// 3. Jika Limit Tercapai, Eksekusi Hukuman
-	// 3. Jika Limit Tercapai, Eksekusi Hukuman
 	if currentCount >= maxLimit {
 		
-		// --- [TAMBAHKAN KODE INI] ---
+		// --- [LOGIKA HISTORI DIPINDAHKAN KE SINI] ---
 		EngineMutex.Lock()
-		TempBanHistory[ip]++ // Histori HANYA NAIK saat IP benar-benar terkena Temp Ban
+		TempBanHistory[ip]++ // Histori HANYA bertambah jika IP benar-benar terkena hukuman
 		histCount := TempBanHistory[ip]
 		EngineMutex.Unlock()
-		// ----------------------------
-		
+		// ---------------------------------------------
+
 		var reason string
 		if service == "MODSEC" {
 			reason = fmt.Sprintf("WAF/ModSecurity Violation (%d exploit attempts)", currentCount)
@@ -302,7 +303,7 @@ func AddStrike(ip, service string, maxLimit int) {
 			
 			escalateToPermBan(ip, "RAF LFD Escalation: Repeat Offender ("+service+")")
 			
-			// Bersihkan state, tapi biarkan histori TempBanHistory tetap >= 4 (sebagai penanda Anti-Spam di masa depan)
+			// Bersihkan state, tapi biarkan histori TempBanHistory tetap >= trigger (sebagai penanda Anti-Spam di masa depan)
 			EngineMutex.Lock()
 			delete(TempBans, ip)
 			delete(StrikeMap, ip)
@@ -318,9 +319,8 @@ func AddStrike(ip, service string, maxLimit int) {
 		delete(StrikeMap, ip) // Reset counter agar serangan berikutnya masuk fase Temp Ban ke-2
 		EngineMutex.Unlock()
 	}
-}
-	
-	
+}	
+		
 
 		
 // GetActiveFailures membaca memori RAM untuk dikirimkan ke Dashboard UI (Tab Live Auth Failures)
