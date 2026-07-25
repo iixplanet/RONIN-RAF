@@ -94,7 +94,7 @@ var ThreatSignatures = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)"client_ip"\s*:\s*"([a-fA-F0-9\.:]+)"`),
 
 		regexp.MustCompile(`(?i)ModSecurity(?:\]|:).*?(?:Access denied|Warning|Access blocked).*?\b((?:[0-9]{1,3}\.){3}[0-9]{1,3}|(?:[a-fA-F0-9]{1,4}:){2,7}[a-fA-F0-9]{1,4})\b`),
-	
+	    regexp.MustCompile(`(?i)\b((?:[0-9]{1,3}\.){3}[0-9]{1,3}|(?:[a-fA-F0-9]{1,4}:){2,7}[a-fA-F0-9]{1,4})\b.*?ModSecurity(?:\]|:).*?(?:Access denied|Warning|Access blocked)`),
 	},
 }
 
