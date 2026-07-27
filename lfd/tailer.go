@@ -93,6 +93,9 @@ var ThreatSignatures = map[string][]*regexp.Regexp{
 		// Nginx / libmodsecurity3 JSON Audit Log Format
 		regexp.MustCompile(`(?i)"client_ip"\s*:\s*"([a-fA-F0-9\.:]+)"`),
 
+		// ModSecurity Audit Log Format (Menangkap IP dari blok -A- dan mencocokkan blok -H-)
+		regexp.MustCompile(`(?s)-+[a-zA-Z0-9]+-+A-+\s*\[[^\]]+\]\s+\S+\s+([a-fA-F0-9\.:]+).*?-+[a-zA-Z0-9]+-+H-+.*?(?:ModSecurity|Message).*?Access denied`),
+
 		regexp.MustCompile(`(?i)ModSecurity(?:\]|:).*?Access denied with code 403.*?\[msg\s+"?\s*((?:[0-9]{1,3}\.){3}[0-9]{1,3})`),
 
 		// 4. LITESPEED NATIVE ERROR LOG STRICT MODE
