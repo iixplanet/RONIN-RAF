@@ -326,25 +326,35 @@ func downloadAndApplyBlocklist(bl Blocklist) {
 		return
 	}
 
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
-	if err != nil { return }
+	// OPTIMASI: Baca dengan metode Streaming (bufio.Scanner) agar RAM tidak membengkak
+	var buffer bytes.Buffer
+	buffer.WriteString(fmt.Sprintf("flush RAF_bl_%s\n", bl.Name)) 
+	ipCount := 0
 
-	ips := ipv4Regex.FindAllString(string(bodyBytes), -1)
-
-	if len(ips) > 0 {
-		var buffer bytes.Buffer
-		buffer.WriteString(fmt.Sprintf("flush RAF_bl_%s\n", bl.Name)) 
-		for _, ip := range ips {
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		
+		// Ekstrak IP langsung dari tiap baris tanpa menahan keseluruhan file di RAM
+		ip := ipv4Regex.FindString(line)
+		if ip != "" {
 			buffer.WriteString(fmt.Sprintf("add RAF_bl_%s %s -exist\n", bl.Name, ip))
+			ipCount++
 		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		utils.LogWarn("RAF Threat Feed: Stream reading error for [%s]: %v", bl.Name, err)
+	}
+
+	if ipCount > 0 {
 		cmd := exec.Command("ipset", "-!", "restore")
 		cmd.Stdin = bytes.NewReader(buffer.Bytes())
 		if err := cmd.Run(); err == nil {
-			utils.LogInfo("RAF Threat Feed: List [%s] updated! Applied %d malicious IPs to kernel sets.", bl.Name, len(ips))
+			utils.LogInfo("RAF Threat Feed: List [%s] updated! Applied %d malicious IPs to kernel sets.", bl.Name, ipCount)
 		} else {
 			utils.LogError("RAF Threat Feed: Failed to apply list [%s] to kernel IP sets.", bl.Name)
 		}
 	} else {
 		utils.LogWarn("RAF Threat Feed: List [%s] returned 0 valid IPs.", bl.Name)
 	}
-}
