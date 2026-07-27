@@ -99,6 +99,9 @@ var ThreatSignatures = map[string][]*regexp.Regexp{
 		regexp.MustCompile(`(?i)ModSecurity(?:\]|:).*?Access denied with code 403.*?\[msg\s+"?\s*((?:[0-9]{1,3}\.){3}[0-9]{1,3})`),
 		regexp.MustCompile(`(?s)A--\s*\[[^\]]+\]\s+\S+\s+([a-fA-F0-9\.:]+).*?-H--\s*(?:Message|ModSecurity).*?Access denied`),
 
+		// Menangkap IP dari log Apache/LiteSpeed/Nginx untuk status "ModSecurity: Access denied with" (Connection Closed/Dropped)
+		regexp.MustCompile(`(?i)\[(?:client|remote)\s+(?:::ffff:)?([a-fA-F0-9\.:]+)(?::\d+)?\].*?ModSecurity:\s*Access denied with`),
+		
 		// 4. LITESPEED NATIVE ERROR LOG STRICT MODE
 		// Contoh log: [140.83.85.172:59721] [ModSecurity] Access denied with code 403
 		regexp.MustCompile(`(?i)\[((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?::\d+)?\].*?ModSecurity.*?Access denied with code 403`),
@@ -149,7 +152,8 @@ func parseLogLine(line, service string, maxLimit int) {
 		is403 := strings.Contains(line, "\"http_code\":403") || 
 				 strings.Contains(line, "\"http_code\": 403") ||
 				 strings.Contains(line, "code 403") ||
-				 strings.Contains(line, " 403 Forbidden")
+				 strings.Contains(line, " 403 Forbidden") ||
+		         strings.Contains(line, "Access denied")
 		
 		// Jika log ini bukan log pemblokiran (403), lewati (jangan blokir IP-nya)
 		if !is403 {
