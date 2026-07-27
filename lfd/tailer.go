@@ -98,13 +98,12 @@ var ThreatSignatures = map[string][]*regexp.Regexp{
 		// 4. LITESPEED NATIVE ERROR LOG STRICT MODE
 		// Contoh log: [140.83.85.172:59721] [ModSecurity] Access denied with code 403
 		regexp.MustCompile(`(?i)\[((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?::\d+)?\].*?ModSecurity.*?Access denied with code 403`),
-		(?s)---([A-Za-z0-9]+)---A--\s*\[(?P<timestamp>[^\]]+)\]\s+(?P<uid>\S+)\s+(?P<ip>\S+)\s+\d+\s+(?P<host>\S+).*?---(?:\1)---H--\s*(ModSecurity: Access denied with code (?P<code>\d+)).*?\[id "(?P<rule_id>\d+)"\]
 
 		// 5. cpanel apache v2 native
-		RegexModSec = regexp.MustCompile(`(?i)(?:ModSecurity: Access denied.*?\[client |^\[\d{1,2}/[a-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}[^\]]*\]\s+\S+\s+)([\d\.]+|[a-fA-F0-9:]+)`)
+		regexp.MustCompile(`(?i)(?:ModSecurity: Access denied.*?\[client |^\[\d{1,2}/[a-z]{3}/\d{4}:\d{2}:\d{2}:\d{2}[^\]]*\]\s+\S+\s+)([\d\.]+|[a-fA-F0-9:]+)`), // <--- HAPUS RegexModSec = dan TAMBAH KOMA (,) DI SINI
 	},
 }
-
+	
 // ==============================================================================
 // 2. IP SANITIZATION LAYER (MEMASTIKAN FORMAT IP 100% VALID UNTUK KERNEL)
 // ==============================================================================
