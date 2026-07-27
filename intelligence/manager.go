@@ -358,3 +358,4 @@ func downloadAndApplyBlocklist(bl Blocklist) {
 	} else {
 		utils.LogWarn("RAF Threat Feed: List [%s] returned 0 valid IPs.", bl.Name)
 	}
+}
